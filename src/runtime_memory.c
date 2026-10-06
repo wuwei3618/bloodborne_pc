@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include "platform.h"
 #ifdef __APPLE__
+#include <mach/mach.h>
 #include <mach/mach_vm.h>
 #endif
 /* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB. BB_DMEM_MB raises it (the resolution

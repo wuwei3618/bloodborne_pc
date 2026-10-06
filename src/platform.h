@@ -16,7 +16,6 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #ifdef __APPLE__
-#include <mach/mach.h>
 #include <sys/ucontext.h>
 #else
 #include <ucontext.h>
@@ -61,17 +60,13 @@ static inline uint64_t bb_thread_id(void) {
 }
 /* Names the calling thread. */
 static inline void bb_set_thread_name(const char *name) { pthread_setname_np(name); }
-/* CPU times of the calling thread (RUSAGE_THREAD). */
+/* CPU time of the calling thread (RUSAGE_THREAD): macOS has no per-thread getrusage, so all of
+ * it is reported as user time. */
 static inline int bb_thread_rusage(struct rusage *usage) {
     memset(usage,0,sizeof(*usage));
-    mach_port_t thread=mach_thread_self();
-    thread_basic_info_data_t info;
-    mach_msg_type_number_t count=THREAD_BASIC_INFO_COUNT;
-    kern_return_t result=thread_info(thread,THREAD_BASIC_INFO,(thread_info_t)&info,&count);
-    mach_port_deallocate(mach_task_self(),thread);
-    if (result!=KERN_SUCCESS) return -1;
-    usage->ru_utime.tv_sec=info.user_time.seconds; usage->ru_utime.tv_usec=info.user_time.microseconds;
-    usage->ru_stime.tv_sec=info.system_time.seconds; usage->ru_stime.tv_usec=info.system_time.microseconds;
+    struct timespec t;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t)) return -1;
+    usage->ru_utime.tv_sec=t.tv_sec; usage->ru_utime.tv_usec=(int)(t.tv_nsec/1000);
     return 0;
 }
 /* Nanoseconds from now until deadline on clock (far deadlines are capped, past ones <= 0). */
