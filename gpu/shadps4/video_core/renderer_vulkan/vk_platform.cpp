@@ -204,6 +204,11 @@ std::vector<const char*> GetInstanceExtensions(Frontend::WindowSystemType window
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
+#ifdef __APPLE__
+    // bbport: portability drivers (MoltenVK) are only listed with portability enumeration.
+    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
+
     // Sanitize extension list
     std::erase_if(extensions, [&](const char* extension) -> bool {
         const auto it =
@@ -259,15 +264,18 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
     LOG_INFO(Render_Vulkan, "Creating vulkan instance");
 
 #if defined(__APPLE__)
-    // Initialize the environment with the path to the included ICD, so that the loader will
-    // find it.
+    // bbport: a driver manifest packaged next to the executable (vulkan/icd.d) is used when the
+    // environment names no driver; otherwise the loader searches as usual (Vulkan SDK, Homebrew).
     static const auto icd_path = [] {
         char path[PATH_MAX];
         u32 length = PATH_MAX;
         _NSGetExecutablePath(path, &length);
-        return std::filesystem::path(path).parent_path();
+        return std::filesystem::path(path).parent_path() / "vulkan" / "icd.d";
     }();
-    setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
+    if (!std::getenv("VK_DRIVER_FILES") && !std::getenv("VK_ICD_FILENAMES") &&
+        std::filesystem::is_directory(icd_path)) {
+        setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
+    }
 #endif
 
     static vk::detail::DynamicLoader dl;
@@ -399,8 +407,17 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
         },
     };
 
+    vk::InstanceCreateFlags instance_flags{};
+#ifdef __APPLE__
+    if (std::ranges::any_of(extensions, [](const char* extension) {
+            return std::strcmp(extension, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0;
+        })) {
+        instance_flags |= vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
+    }
+#endif
     vk::StructureChain<vk::InstanceCreateInfo, vk::LayerSettingsCreateInfoEXT> instance_ci_chain = {
         vk::InstanceCreateInfo{
+            .flags = instance_flags,
             .pApplicationInfo = &application_info,
             .enabledLayerCount = static_cast<u32>(layers.size()),
             .ppEnabledLayerNames = layers.data(),

@@ -5,7 +5,26 @@
 #include "core/libraries/avplayer/avplayer_error.h"
 #include "core/libraries/avplayer/avplayer_impl.h"
 
+#ifdef __APPLE__
+#include <new>
+extern "C" void* runtime_guest_malloc(std::size_t size);
+extern "C" void runtime_guest_free(void* p);
+#endif
+
 namespace Libraries::AvPlayer {
+
+#ifdef __APPLE__
+void* AvPlayer::operator new(std::size_t size) {
+    if (void* p = runtime_guest_malloc(size)) {
+        return p;
+    }
+    throw std::bad_alloc();
+}
+
+void AvPlayer::operator delete(void* p) noexcept {
+    runtime_guest_free(p);
+}
+#endif
 
 void* PS4_SYSV_ABI AvPlayer::Allocate(void* handle, u32 alignment, u32 size) {
     const auto* const self = reinterpret_cast<AvPlayer*>(handle);

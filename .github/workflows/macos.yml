@@ -1,0 +1,43 @@
+# macOS x86_64 build check (docs/MACOS.md): builds bb-probe and the GPU library on an Intel
+# runner with the Homebrew packages a Mac uses, and runs the tests that need no GPU or game.
+name: macOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Dependencies
+        run: >-
+          brew install cmake ninja pkgconf glslang vulkan-headers vulkan-loader sdl3 ffmpeg
+          boost fmt magic_enum robin-map xxhash zydis miniz xbyak
+
+      - name: Build, runtime tests
+        run: BB_LTO=OFF bash build.sh --test
+
+      - name: GPU library tests
+        run: |
+          ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test
+          for test in motion-history-test ui-composition-test motion-shader-test; do
+            ./out/gpu/$test
+          done
+
+      - name: Python tests
+        run: python3 -m unittest discover -s tests
+
+      - name: GPU library build log
+        if: failure()
+        run: tail -n 300 out/gpu-build.log || true

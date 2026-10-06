@@ -2,7 +2,9 @@
  * protection changes and queries. One sparse memfd backs the whole direct
  * pool, so any mapping of any physical range aliases the same storage.
  * Guest addresses are placed below 1 TiB (PS4 user range): GPU descriptors
- * encode 40-bit addresses, so host-default 0x7f... addresses would not fit. */
+ * encode 40-bit addresses, so host-default 0x7f... addresses would not fit.
+ * macOS: POSIX shared memory instead of the memfd, and the whole guest range is
+ * reserved up front (guest_space) so nothing else lands in it. */
 #define _GNU_SOURCE
 #include "runtime.h"
 #include <stdio.h>
@@ -17,6 +19,10 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "platform.h"
+#ifdef __APPLE__
+#include <mach/mach_vm.h>
+#endif
 /* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB. BB_DMEM_MB raises it (the resolution
  * patches above 1080p need about 4 GiB more; run.sh sets it). */
 static uint64_t pool_size_bytes(void) {
@@ -67,8 +73,15 @@ static void write_lock(void) {
 static void write_unlock(void) {
     if (!--exclusive_depth) { __atomic_add_fetch(&table_generation,1,__ATOMIC_RELEASE); pthread_rwlock_unlock(&lock); }
 }
+#ifdef __APPLE__
+/* macOS rwlocks may queue a nested read behind a waiting writer: count nesting instead. */
+static __thread unsigned read_depth;
+static void read_lock(void) { if (!exclusive_depth && !read_depth++) pthread_rwlock_rdlock(&lock); }
+static void read_unlock(void) { if (!exclusive_depth && !--read_depth) pthread_rwlock_unlock(&lock); }
+#else
 static void read_lock(void) { if (!exclusive_depth) pthread_rwlock_rdlock(&lock); }
 static void read_unlock(void) { if (!exclusive_depth) pthread_rwlock_unlock(&lock); }
+#endif
 static Block blocks[LIMIT];
 static Vma *vmas; static size_t vma_count, vma_capacity;
 static int pool_fd=-1;
@@ -90,10 +103,29 @@ static int host_prot(int prot) {
     /* GPU read/write bits (0x10/0x20) need host access for the future GPU backend. */
     return ((prot & 0x11) ? PROT_READ : 0) | ((prot & 0x22) ? PROT_WRITE|PROT_READ : 0) | ((prot & 4) ? PROT_EXEC|PROT_READ : 0);
 }
+#ifdef __APPLE__
+/* An unlinked POSIX shared memory object stands in for the memfd. */
+static int create_pool_fd(void) {
+    char name[32];
+    snprintf(name,sizeof(name),"/bbport.%d",(int)getpid());
+    int fd=shm_open(name,O_RDWR|O_CREAT|O_EXCL,0600);
+    if (fd<0) return -1;
+    shm_unlink(name);
+    fcntl(fd,F_SETFD,FD_CLOEXEC);
+    return fd;
+}
+#endif
+static void guest_space(void);
+static int release_range(uintptr_t start, uint64_t size);
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 static int pool(void) {
     if (pool_fd>=0) return 0;
+    guest_space();
+#ifdef __APPLE__
+    pool_fd=create_pool_fd();
+#else
     pool_fd=memfd_create("bb-guest-memory", MFD_CLOEXEC);
+#endif
     if (pool_fd<0 || ftruncate(pool_fd,(off_t)(POOL_SIZE+FLEX_SPAN))) return -1;
     void *view=mmap(NULL,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
     if (view==MAP_FAILED) return -1;
@@ -132,9 +164,28 @@ static uint64_t flex_alloc(uint64_t size) {
     }
     return UINT64_MAX;
 }
+/* Frees pool storage; the range reads as zeros when it is used again. */
+static void discard(uint64_t phys, uint64_t size) {
+#ifdef __APPLE__
+    /* No hole punching for shared memory on macOS: zero the pages that hold data, through
+     * the backing view. Pages never touched are skipped so they stay unallocated. */
+    enum { RUN=256 };
+    char state[RUN];
+    size_t page=(size_t)getpagesize();
+    for (uint64_t at=0; at<size; at+=(uint64_t)RUN*page) {
+        uint64_t length=size-at<(uint64_t)RUN*page ? size-at : (uint64_t)RUN*page;
+        unsigned char *start=backing_base+phys+at;
+        if (mincore(start,length,state)) { memset(start,0,length); continue; }
+        for (uint64_t p=0; p*page<length; ++p)
+            if (state[p]&(MINCORE_INCORE|MINCORE_PAGED_OUT)) memset(start+p*page,0,page);
+    }
+#else
+    fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
+#endif
+}
 static void flex_free(uint64_t phys, uint64_t size) {
     flex_set((phys-POOL_SIZE)/PAGE,size/PAGE,0);
-    fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
+    discard(phys,size);
 }
 static size_t vma_index(uintptr_t a) { /* first VMA with end > a */
     size_t lo=0, hi=vma_count;
@@ -204,6 +255,7 @@ static void drop_range(uintptr_t start, uintptr_t end) {
 /* Places a host mapping; with MAP_FIXED it replaces what the guest had there. */
 static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t alignment,
                      int kind, int type, uint64_t phys) {
+    guest_space();
     uintptr_t address=(uintptr_t)*inout;
     if (flags & MAP_FIXED_FLAG) {
         if (!address || address%PAGE) return INVALID;
@@ -300,7 +352,7 @@ static int32_t unmap_locked(uintptr_t start, uint64_t size) {
         }
     for (size_t i=vma_index(start); i<vma_count && vmas[i].start<end; ++i) {
         uintptr_t a=vmas[i].start>start ? vmas[i].start : start, b=vmas[i].end<end ? vmas[i].end : end;
-        if (munmap((void *)a,b-a)) return INVALID;
+        if (release_range(a,b-a)) return INVALID;
     }
     drop_range(start,end);
     return 0;
@@ -343,7 +395,7 @@ static ABI int32_t direct_release(uint64_t start, uint64_t size) {
         if (right.size) for (int j=0;j<LIMIT;++j) if (!blocks[j].used) { blocks[j]=right; break; }
         live_bytes-=e-a;
     }
-    fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)start,(off_t)size); /* zero on reuse */
+    discard(start,size); /* zero on reuse */
     write_unlock();
     flush_hooks();
     return 0;
@@ -493,17 +545,60 @@ uintptr_t runtime_memory_resolve(const char *name) {
  * [LOW_MIN, USER_MIN): PS4 code packs pointers into 40-bit fields. */
 #define LOW_MIN UINT64_C(0x0800000000)
 static uintptr_t low_next=LOW_MIN;
+#ifdef __APPLE__
+/* macOS puts other mappings (libraries, the GPU driver's memory) wherever there is room, so
+ * [LOW_MIN, USER_MAX) is reserved once: guest and low mappings replace parts of the
+ * reservation, and released parts return to it. */
+static int space_reserved;
+static void guest_space(void) {
+    static int tried;
+    if (tried) return;
+    tried=1;
+    void *at=mmap((void *)LOW_MIN,USER_MAX-LOW_MIN,PROT_NONE,MAP_PRIVATE|MAP_ANON|MAP_NORESERVE,-1,0);
+    if (at==(void *)LOW_MIN) { space_reserved=1; return; }
+    if (at!=MAP_FAILED) munmap(at,USER_MAX-LOW_MIN);
+    mach_vm_address_t address=LOW_MIN; mach_vm_size_t size=0; mach_port_t object=MACH_PORT_NULL;
+    vm_region_basic_info_data_64_t info; mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;
+    if (mach_vm_region(mach_task_self(),&address,&size,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&count,&object)!=KERN_SUCCESS)
+        address=size=0;
+    fprintf(stderr,"Runtime: WARNING: guest range 0x%" PRIx64 "-0x%" PRIx64 " is in use (0x%llx, 0x%llx bytes); "
+            "continuing without a reservation\n",LOW_MIN,USER_MAX,(unsigned long long)address,(unsigned long long)size);
+}
+static int release_range(uintptr_t start, uint64_t size) {
+    if (space_reserved)
+        return mmap((void *)start,size,PROT_NONE,MAP_PRIVATE|MAP_ANON|MAP_NORESERVE|MAP_FIXED,-1,0)==MAP_FAILED ? -1 : 0;
+    return munmap((void *)start,size);
+}
+#else
+static void guest_space(void) {}
+static int release_range(uintptr_t start, uint64_t size) { return munmap((void *)start,size); }
+#endif
 void *runtime_low_map(size_t size, int prot) {
     size=align_up(size,PAGE);
     write_lock();
+    guest_space();
     void *p=MAP_FAILED;
     while (low_next+size<=USER_MIN) {
+#ifdef __APPLE__
+        if (space_reserved) p=mmap((void *)low_next,size,prot,MAP_PRIVATE|MAP_ANON|MAP_FIXED,-1,0);
+        else {
+            /* No reservation: the address is a hint, taken only when it was honoured. */
+            p=mmap((void *)low_next,size,prot,MAP_PRIVATE|MAP_ANON,-1,0);
+            if (p!=MAP_FAILED && p!=(void *)low_next) { munmap(p,size); p=MAP_FAILED; }
+        }
+#else
         p=mmap((void *)low_next,size,prot,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+#endif
         low_next+=size+PAGE; /* unmapped gap catches overruns */
         if (p!=MAP_FAILED) break;
     }
     write_unlock();
     return p==MAP_FAILED ? NULL : p;
+}
+void runtime_low_unmap(void *address, size_t size) {
+    write_lock();
+    release_range((uintptr_t)address,align_up(size,PAGE));
+    write_unlock();
 }
 /* ---- GPU library interface (gpu/shim/bbgpu.cpp) ---- */
 /* Optimizations switched off at run time (diagnostics): the number in the file named by
@@ -644,6 +739,7 @@ void runtime_memory_report(void) {
 }
 #else
 void *runtime_low_map(size_t size, int prot) { (void)size; (void)prot; return NULL; }
+void runtime_low_unmap(void *address, size_t size) { (void)address; (void)size; }
 uintptr_t runtime_memory_resolve(const char *name) { (void)name; return 0; }
 int runtime_memory_is_mapped(uintptr_t address, uint64_t size) { (void)address; (void)size; return 0; }
 void runtime_memory_report(void) { puts("Runtime: Windows direct-memory backend not implemented"); }

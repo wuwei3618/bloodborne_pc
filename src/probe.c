@@ -8,21 +8,26 @@
 #include "runtime.h"
 #include "gpu/bbgpu.h"
 #if !defined(__x86_64__) || !defined(__GNUC__)
-#error This prototype requires x86-64 GCC or Clang (including MinGW).
+#error This prototype requires x86-64 GCC or Clang (including MinGW; on Apple silicon, an x86_64 build run by Rosetta 2).
 #endif
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <sys/mman.h>
-#include <malloc.h>
 #include <unistd.h>
 #include <signal.h>
-#include <ucontext.h>
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <execinfo.h>
-#include <sys/syscall.h>
 #include <sys/uio.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#else
+#include <malloc.h>
+#include <sys/syscall.h>
+#endif
+#include "platform.h"
 #endif
 
 typedef struct { uint64_t address, size, flags; } Segment;
@@ -93,7 +98,7 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
 #ifndef _WIN32
 /* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack. */
 void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
-__asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
+__asm__(".text\n.globl " BB_ASM_SYMBOL(enter_on_stack) "\n" BB_ASM_SYMBOL(enter_on_stack) ":\n"
         " push %rbp\n mov %rsp,%rbp\n and $-16,%rcx\n mov %rcx,%rsp\n"
         " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n call *%rax\n"
         " mov %rbp,%rsp\n pop %rbp\n ret\n");
@@ -102,7 +107,7 @@ static ABI void guest_exit(void) { puts("Runtime: process finalizer callback rea
 #ifndef _WIN32
 static void fault(int sig, siginfo_t *info, void *context) {
     /* GPU page tracking (write-protected guest pages) is resolved first. */
-    if (gpu_enabled && sig == SIGSEGV && bbgpu_handle_fault(context, info->si_addr)) return;
+    if (gpu_enabled && BB_ACCESS_FAULT(sig) && bbgpu_handle_fault(context, info->si_addr)) return;
     /* A speculative guest memory read (runtime_memory.c) failed: resume its recovery point. */
     if ((sig == SIGSEGV || sig == SIGBUS) && runtime_fault_recover) {
         sigjmp_buf *recover = runtime_fault_recover;
@@ -115,7 +120,7 @@ static void fault(int sig, siginfo_t *info, void *context) {
     }
     /* The process is terminating: dladdr/snprintf are acceptable here. */
     ucontext_t *uc = context;
-    uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+    uintptr_t rip = (uintptr_t)BB_CTX_RIP(uc);
     char line[512];
     Dl_info where;
     if (rip - (uintptr_t)image < 0x10000000)
@@ -143,26 +148,35 @@ static void fault(int sig, siginfo_t *info, void *context) {
 }
 #endif
 /* Watchdog: dump RIP and the rbp frame chain of every thread (guest offsets
- * when inside the image). Reads use process_vm_readv so bad frames cannot fault. */
+ * when inside the image). Reads use process_vm_readv (macOS: mach_vm_read_overwrite)
+ * so bad frames cannot fault. */
 static uintptr_t exe_base;
+static int read_safely(uintptr_t address, void *out, size_t size) {
+#ifdef __APPLE__
+    mach_vm_size_t got=0;
+    return mach_vm_read_overwrite(mach_task_self(),address,size,(mach_vm_address_t)(uintptr_t)out,&got)==KERN_SUCCESS && got==size;
+#else
+    struct iovec local={out,size}, remote={(void *)address,size};
+    return process_vm_readv(getpid(),&local,1,&remote,1,0)==(ssize_t)size;
+#endif
+}
 static void write_hex(char *out, uint64_t v) {
     const char digits[] = "0123456789abcdef";
     for (int i = 0; i < 16; ++i) out[i] = digits[(v >> (60 - i * 4)) & 15];
 }
 static void dump_frames(ucontext_t *uc) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
-    uintptr_t rip=(uintptr_t)uc->uc_mcontext.gregs[REG_RIP], rbp=(uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
-    uint64_t tid=(uint64_t)gettid();
+    uintptr_t rip=(uintptr_t)BB_CTX_RIP(uc), rbp=(uintptr_t)BB_CTX_RBP(uc);
+    uint64_t tid=bb_thread_id();
     /* First argument register: the lock address when a thread waits on a futex. */
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
-    write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)uc->uc_mcontext.gregs[REG_RDI]);
+    write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)BB_CTX_RDI(uc));
     { ssize_t written_=write(2,arg,sizeof(arg)-1); (void)written_; }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
         { ssize_t written_=write(2,line,sizeof(line)-1); (void)written_; }
         uintptr_t frame[2];
-        struct iovec local={frame,sizeof(frame)}, remote={(void *)rbp,sizeof(frame)};
-        if (!rbp || process_vm_readv(getpid(),&local,1,&remote,1,0)!=(ssize_t)sizeof(frame)) break;
+        if (!rbp || !read_safely(rbp,frame,sizeof(frame))) break;
         if (frame[0]<=rbp) break;
         rbp=frame[0]; rip=frame[1];
     }
@@ -173,6 +187,15 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
     const char head[]="STOP: watchdog timeout; thread stacks:\n";
     { ssize_t written_=write(2,head,sizeof(head)-1); (void)written_; }
     dump_frames(context);
+#ifdef __APPLE__
+    thread_act_array_t list;
+    mach_msg_type_number_t count=0;
+    if (task_threads(mach_task_self(),&list,&count)==KERN_SUCCESS)
+        for (mach_msg_type_number_t i=0; i<count; ++i) {
+            pthread_t thread=pthread_from_mach_thread_np(list[i]);
+            if (thread && !pthread_equal(thread,pthread_self())) { pthread_kill(thread,SIGUSR2); usleep(20000); }
+        }
+#else
     int dir=open("/proc/self/task",O_RDONLY|O_DIRECTORY);
     char buffer[4096];
     long n;
@@ -184,6 +207,7 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
             if (tid>0 && tid!=self) { syscall(SYS_tgkill,getpid(),tid,SIGUSR2); usleep(20000); }
             at+=d->reclen;
         }
+#endif
     usleep(100000);
     _exit(128 + sig);
 }
@@ -216,6 +240,27 @@ static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t 
             address - segments[i].address <= segments[i].size - bytes) return 1;
     return 0;
 }
+#ifndef _WIN32
+/* The scripts rewrote the guest's `mov rax, fs:[0]` into `mov rax, gs:[0]`. Where the thread
+ * pointer is at another GS offset (a macOS TSD slot), each of those loads gets it here. */
+static void patch_thread_pointer_loads(const Segment *segments, uint64_t count) {
+    uint32_t displacement=runtime_tls_displacement();
+    if (!displacement) return;
+    static const unsigned char load[9]={0x65,0x48,0x8b,0x04,0x25,0,0,0,0};
+    uint64_t patched=0;
+    for (uint64_t s=0; s<count; ++s) {
+        if (!(segments[s].flags & 1) || segments[s].size<sizeof(load)) continue;
+        unsigned char *at=image+segments[s].address, *end=at+segments[s].size-sizeof(load)+1;
+        for (; at<end; ++at)
+            if (*at==load[0] && !memcmp(at,load,sizeof(load))) {
+                memcpy(at+5,&displacement,4);
+                at+=sizeof(load)-1;
+                ++patched;
+            }
+    }
+    printf("Thread pointer loads: %" PRIu64 " read gs:[0x%x]\n",patched,displacement);
+}
+#endif
 /* BBPATCH2 (patches.py): the patches' image base, then byte writes at image offsets, applied
  * after relocation. A write may replace a whole base-relative pointer slot (60/90 FPS++ swap
  * function pointers): the patch holds the address at the patches' base, rebased here. */
@@ -259,7 +304,11 @@ void runtime_restart(void) {
     fflush(NULL);
     puts("Runtime: restarting through run.sh");
 #ifndef _WIN32
+#ifdef __APPLE__
+    for (int fd = 3, n = getdtablesize(); fd < n; ++fd) close(fd);
+#else
     syscall(SYS_close_range, 3u, ~0u, 0u);
+#endif
     execlp("bash", "bash", "run.sh", (char *)NULL);
     perror("runtime_restart: exec");
     _exit(1);
@@ -269,10 +318,13 @@ void runtime_restart(void) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 #ifndef _WIN32
+#ifndef __APPLE__
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
-       non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
+       non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits.
+       macOS has no such heap; those objects come from runtime_heap.c there. */
     mallopt(M_ARENA_MAX,1);
     mallopt(M_MMAP_THRESHOLD,32*1024*1024);
+#endif
 #endif
     if (argc == 2 && !strcmp(argv[1], "--vulkan-only")) return vulkan_smoke();
     int cpu_only = 0, strict_imports = 0;
@@ -429,6 +481,9 @@ int main(int argc, char **argv) {
     image = allocate(round_page(size));
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
+#ifndef _WIN32
+    patch_thread_pointer_loads(segments, ns);
+#endif
     if (!cpu_only) {
         char title[128]="Bloodborne", serial[16]="UNKNOWN", sfo[4096];
         uint32_t attributes=0;

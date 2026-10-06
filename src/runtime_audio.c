@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <SDL3/SDL.h>
+#include "platform.h"
 
 #define PORTS 25
 #define ERR_NOT_OPENED ((int32_t)0x80260001)
@@ -53,7 +54,7 @@ static size_t buffers_out, ports_opened;
 static uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000000u+(uint64_t)t.tv_nsec; }
 static void sleep_until(uint64_t deadline) {
     struct timespec t={(time_t)(deadline/1000000000u),(long)(deadline%1000000000u)};
-    while (clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&t,NULL)) {}
+    bb_sleep_until(&t);
 }
 static int sdl_audio(void) {
     if (sdl_ready<0) {

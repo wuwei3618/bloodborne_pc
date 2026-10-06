@@ -64,6 +64,14 @@ void runtime_thread_keys_cleanup(void);
 /* Guest-visible errno values are FreeBSD's. */
 int32_t runtime_guest_errno(int host_errno);
 void *runtime_low_map(size_t size, int prot);
+void runtime_low_unmap(void *address, size_t size);
+/* Allocations the guest can see, kept below 1 TiB (runtime_heap.c). */
+void *runtime_guest_malloc(size_t size);
+void *runtime_guest_calloc(size_t count, size_t size);
+void *runtime_guest_aligned_alloc(size_t alignment, size_t size);
+void runtime_guest_free(void *p);
+/* Displacement of the rewritten `mov rax, gs:[disp]` thread pointer loads (0 on Linux). */
+uint32_t runtime_tls_displacement(void);
 uintptr_t runtime_ajm_resolve(const char *name);
 void runtime_ajm_report(void);
 uintptr_t runtime_audio_resolve(const char *name);

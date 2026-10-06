@@ -102,9 +102,11 @@ void Liverpool::ProcessCommands() {
 
 void Liverpool::Process(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuCommandProcessor");
+#ifndef __APPLE__ // bbport: macOS has no per-thread CPU clocks; frame stats omit GPU thread time
     if (clockid_t clock; pthread_getcpuclockid(pthread_self(), &clock) == 0) {
         BbStats::gpu_thread_clock.store(static_cast<int>(clock));
     }
+#endif
     gpu_id = std::this_thread::get_id();
 #ifdef __linux__
     gpu_tid = gettid();

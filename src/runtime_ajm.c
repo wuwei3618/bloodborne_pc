@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include "platform.h"
 #include "third_party/LibAtrac9/C/src/libatrac9.h"
 
 #define ERR_INVALID_CONTEXT ((int32_t)0x80930002)
@@ -69,7 +70,7 @@ typedef struct {
 typedef struct { int used, registered[24]; Instance instances[MAX_INSTANCES+1]; } Context;
 typedef struct { int used, context, canceled; } Batch;
 
-static pthread_mutex_t lock=PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+static pthread_mutex_t lock=BB_RECURSIVE_MUTEX_INITIALIZER;
 static Context *contexts[MAX_CONTEXTS+1];
 static Batch batches[MAX_BATCHES];
 static size_t jobs_run, frames_decoded, batches_run;

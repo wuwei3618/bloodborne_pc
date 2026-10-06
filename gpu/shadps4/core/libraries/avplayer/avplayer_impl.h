@@ -15,6 +15,12 @@ namespace Libraries::AvPlayer {
 class AvPlayer {
 public:
     AvPlayer(const AvPlayerInitData& data);
+#ifdef __APPLE__
+    // bbport: the guest keeps this object's address as its player handle. macOS heap addresses
+    // do not fit the 40 bits guest code packs pointers into (src/runtime_heap.c).
+    static void* operator new(std::size_t size);
+    static void operator delete(void* p) noexcept;
+#endif
 
     s32 PostInit(const AvPlayerPostInitData& data);
     s32 AddSource(std::string_view filename);

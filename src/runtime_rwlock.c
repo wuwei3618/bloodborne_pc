@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <limits.h>
+#include "platform.h"
 typedef struct Holder {
     pthread_t thread;
     unsigned readers, writer, pending;
@@ -45,10 +46,10 @@ static Rwlock *find_locked(Rwlock *handle) {
     return NULL;
 }
 static int create_locked(Rwlock **out) {
-    Rwlock *r=calloc(1,sizeof(*r));
+    Rwlock *r=runtime_guest_calloc(1,sizeof(*r));
     if (!r) return ENOMEM;
     int e=pthread_rwlock_init(&r->native,NULL);
-    if (e) { free(r); return e; }
+    if (e) { runtime_guest_free(r); return e; }
     r->next=registry; registry=r; *out=r; ++created; return 0;
 }
 static ABI int32_t rw_init(Rwlock **out, void *const *attr, const char *name) {
@@ -97,7 +98,7 @@ static int32_t acquire(Rwlock **handle, enum Operation op, const GuestTime *time
         if (!time || time->nanoseconds<0 || time->nanoseconds>=1000000000) e=EINVAL;
         else {
             struct timespec deadline={.tv_sec=(time_t)time->seconds,.tv_nsec=(long)time->nanoseconds};
-            e=writer ? pthread_rwlock_timedwrlock(&r->native,&deadline) : pthread_rwlock_timedrdlock(&r->native,&deadline);
+            e=bb_rwlock_timedlock(&r->native,writer,&deadline);
         }
     }
     pthread_mutex_lock(&registry_lock);
@@ -139,7 +140,7 @@ static ABI int32_t rw_destroy(Rwlock **handle) {
     if (!e) {
         Rwlock **link=&registry;
         while (*link!=r) link=&(*link)->next;
-        *link=r->next; free(r); *handle=(Rwlock *)(uintptr_t)1;
+        *link=r->next; runtime_guest_free(r); *handle=(Rwlock *)(uintptr_t)1;
     }
     pthread_mutex_unlock(&registry_lock); return error(e);
 }

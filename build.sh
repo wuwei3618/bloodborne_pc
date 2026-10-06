@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
+# macOS: the game's own x86-64 code runs in-process, so everything is built for x86_64 (on
+# Apple silicon it runs under Rosetta 2) against the x86_64 Homebrew in /usr/local.
+macos=
+if [[ $(uname -s) == Darwin ]]; then
+    macos=1
+    if [[ $(uname -m) != x86_64 ]]; then
+        exec arch -x86_64 /bin/bash "$0" "$@"
+    fi
+    export PATH=/usr/local/bin:$PATH
+fi
 mkdir -p out
 if [[ -z ${CC:-} ]]; then
     CC=$(command -v cc || command -v gcc || true)
@@ -17,6 +27,7 @@ if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && co
     if [[ -z ${BB_IN_NIX_SHELL:-} ]] && command -v nix-shell >/dev/null; then
         exec env BB_IN_NIX_SHELL=1 nix-shell shell.nix --run "bash build.sh $*"
     fi
+    if [[ -n $macos ]]; then echo 'Need the x86_64 Homebrew packages listed in docs/MACOS.md.' >&2; exit 1; fi
     echo 'Need pkg-config with vulkan and sdl3, cmake and ninja (see shell.nix).' >&2; exit 1
 fi
 read -r -a includes <<< "$(pkg-config --cflags vulkan sdl3)"
@@ -39,8 +50,13 @@ for patch in gpu/patches/fsr-vulkan/*.patch; do
         git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
     fi
 done
+platform_cmake=()
+if [[ -n $macos ]]; then
+    # Keep CMake away from an arm64 Homebrew in /opt/homebrew.
+    platform_cmake=(-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew)
+fi
 cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBB_PGO="$pgo" \
-    -DBB_LTO="${BB_LTO:-ON}" -DBB_PGO_DIR="$PWD/pgo" >/dev/null
+    -DBB_LTO="${BB_LTO:-ON}" -DBB_PGO_DIR="$PWD/pgo" ${platform_cmake[@]+"${platform_cmake[@]}"} >/dev/null
 echo "GPU library: PGO $pgo, LTO ${BB_LTO:-ON}"
 # A failed GPU build must stop here: an older libbbgpu.so would otherwise be used silently.
 if ! ninja -C out/gpu bbgpu > out/gpu-build.log 2>&1; then
@@ -49,6 +65,12 @@ if ! ninja -C out/gpu bbgpu > out/gpu-build.log 2>&1; then
 fi
 # $ORIGIN/gpu: packaged copies keep the library next to the binary without patching it.
 gpu=(-Lout/gpu -lbbgpu -Wl,-rpath,'$ORIGIN/gpu' -Wl,-rpath,"$PWD/out/gpu" -rdynamic)
+# The loader is non-PIE on Linux (its heap stays below 1 TiB, see probe.c); macOS links PIE.
+nopie=(-no-pie)
+if [[ -n $macos ]]; then
+    gpu=(-Lout/gpu -lbbgpu -Wl,-rpath,@loader_path/gpu -Wl,-rpath,"$PWD/out/gpu" -Wl,-export_dynamic)
+    nopie=()
+fi
 runtime=(src/runtime*.c)
 # Third-party decoders: compiled once, without this project's -Werror policy.
 atrac9=(third_party/LibAtrac9/C/src/*.c)
@@ -57,7 +79,7 @@ if [[ ! -f out/libatrac9.a || -n $(find third_party/LibAtrac9/C/src -newer out/l
     for source in "${atrac9[@]}"; do "$CC" -std=c99 -O2 -g -w -c "$source" -o "out/atrac9/$(basename "${source%.c}").o"; done
     ar rcs out/libatrac9.a out/atrac9/*.o
 fi
-"$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -no-pie "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/vulkan_smoke.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/bb-probe
+"$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread ${nopie[@]+"${nopie[@]}"} "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/vulkan_smoke.c out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/bb-probe
 echo "Built $PWD/out/bb-probe"
 # GPU check for run.sh (live_resolution=auto): links only the Vulkan loader.
 "$CC" -std=c11 -O2 -Wall -Wextra -Werror tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities

@@ -11,6 +11,16 @@ if [[ ${1:-} == --software ]]; then
     if [[ -z ${VK_DRIVER_FILES:-} ]]; then echo 'Lavapipe not found; set VK_DRIVER_FILES.' >&2; exit 1; fi
     export VK_LOADER_LAYERS_DISABLE='~implicit~'
 fi
+# macOS: the Vulkan SDK's KosmicKrisp driver (the one shadPS4's macOS build uses too) unless
+# VK_DRIVER_FILES names a driver; more file descriptors than the default 256.
+if [[ $OSTYPE == darwin* ]]; then # a bash variable: no external command (see below)
+    if [[ -z ${VK_DRIVER_FILES:-}${VK_ICD_FILENAMES:-} ]]; then
+        for candidate in /usr/local/share/vulkan/icd.d/*kosmickrisp*.json "$HOME"/VulkanSDK/*/macOS/share/vulkan/icd.d/*kosmickrisp*.json; do
+            if [[ -f $candidate ]]; then export VK_DRIVER_FILES=$candidate; break; fi
+        done
+    fi
+    ulimit -n 4096 2>/dev/null || true
+fi
 # BB_PREBUILT=1 (packaged builds, the AppImage): out/bb-probe and its GPU library are installed
 # next to this script; nothing is built and no nix-shell is needed.
 # BB_DATA_DIR: writable directory for the generated files (out/), saves (user/) and bbport.ini;
