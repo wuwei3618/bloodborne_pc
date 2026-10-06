@@ -6,7 +6,9 @@
 #include <setjmp.h>
 // Renderer tests have no guest process. Clock/host-thread services work; guest accesses abort.
 extern "C" {
-thread_local sigjmp_buf* runtime_fault_recover = nullptr;
+// __thread as in the runtime: a C++ thread_local's storage is internal on macOS (reached through a
+// wrapper function), so the GPU library's reference to this symbol would not resolve there.
+__thread sigjmp_buf* runtime_fault_recover = nullptr;
 uint32_t runtime_disabled_optimizations = 0;
 uint64_t runtime_tsc_frequency() { return 1000000000; }
 int runtime_file_translate(const char*, char*, size_t) { std::abort(); }
