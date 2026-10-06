@@ -17,7 +17,8 @@ class ModTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Resolved, as the paths mods.py returns (macOS keeps temporary files behind /var -> /private/var).
+        self.root = Path(self.temp.name).resolve()
         self.game = self.root / 'CUSA03173'
         self.assets = self.game / 'dvdroot_ps4' / 'chr'
         self.assets.mkdir(parents=True)

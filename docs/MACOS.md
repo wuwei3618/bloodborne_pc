@@ -6,15 +6,18 @@ through Vulkan on Metal with LunarG's **KosmicKrisp** driver (the one shadPS4's 
 uses).
 
 **Status:** a GitHub Actions job (`.github/workflows/macos.yml`, Intel runner) builds the port
-and runs its runtime tests on macOS. The game itself has **not been run on a Mac yet** —
-reports (logs, see the end) are what this stage needs.
+on macOS and runs its tests there: the runtime tests (guest TLS, guest memory, locks,
+semaphores, files), the GPU library tests that need no GPU, and the Python tests, which also
+start `bb-probe` on small synthetic x86-64 images. The game itself has **not been run on a Mac
+yet** — reports (logs, see the end) are what this stage needs.
 
 ## Requirements
 
 - A Mac with Apple silicon (M1 or newer) and **macOS 26** or later: KosmicKrisp is built on
   Metal 4. Intel Macs can build the port natively, but KosmicKrisp does not support them.
-- Rosetta 2, Python 3, and Xcode 26 or its command line tools (as for shadPS4: the renderer
-  needs `std::jthread` from the C++ library of Xcode 26).
+- Rosetta 2, and Xcode 26 or its command line tools (as for shadPS4: the renderer needs
+  `std::jthread` from the C++ library of Xcode 26). Their `python3` (3.9) runs the
+  preparation scripts.
 - The **x86_64 Homebrew** in `/usr/local` (next to an arm64 Homebrew in `/opt/homebrew`, if
   you have one). Libraries for an x86_64 program must be x86_64.
 - The **Vulkan SDK for macOS** from LunarG (1.4.357.0 or newer), which includes KosmicKrisp
@@ -30,7 +33,7 @@ xcode-select --install
 # x86_64 Homebrew (installs to /usr/local)
 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-headers vulkan-loader \
-    sdl3 ffmpeg boost fmt magic_enum robin-map xxhash zydis miniz xbyak python@3
+    sdl3 ffmpeg boost fmt magic_enum robin-map xxhash zydis miniz xbyak
 ```
 
 Install the Vulkan SDK with LunarG's installer into its default place (`~/VulkanSDK/<version>`);
