@@ -5,6 +5,9 @@
 #include <pthread.h>
 #include <sys/resource.h>
 #include <time.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #include "bbport_copy.h"
 #include "bbport_toggles.h"
 #include <cstdio>
@@ -1328,6 +1331,21 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     }
     if (seq != NoSeq && BbStats::enabled) {
         BbStats::submissions.fetch_add(1, std::memory_order_relaxed);
+#ifdef __APPLE__
+        // macOS has no per-thread getrusage: the thread's CPU times only.
+        const mach_port_t thread = mach_thread_self();
+        thread_basic_info_data_t info;
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        if (thread_info(thread, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count) ==
+            KERN_SUCCESS) {
+            BbStats::gpu_user_us.store(u64(info.user_time.seconds) * 1000000 + info.user_time.microseconds,
+                                       std::memory_order_relaxed);
+            BbStats::gpu_sys_us.store(u64(info.system_time.seconds) * 1000000 +
+                                          info.system_time.microseconds,
+                                      std::memory_order_relaxed);
+        }
+        mach_port_deallocate(mach_task_self(), thread);
+#else
         if (rusage usage{}; getrusage(RUSAGE_THREAD, &usage) == 0) {
             BbStats::gpu_user_us.store(u64(usage.ru_utime.tv_sec) * 1000000 + usage.ru_utime.tv_usec,
                                        std::memory_order_relaxed);
@@ -1337,6 +1355,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             BbStats::gpu_vol_switches.store(usage.ru_nvcsw, std::memory_order_relaxed);
             BbStats::gpu_minor_faults.store(usage.ru_minflt, std::memory_order_relaxed);
         }
+#endif
     }
 
     FIBER_EXIT;

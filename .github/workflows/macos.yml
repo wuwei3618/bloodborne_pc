@@ -20,6 +20,16 @@ jobs:
         with:
           submodules: recursive
 
+      # The renderer needs std::jthread in libc++ (Xcode 26, as for shadPS4); macOS 26 itself
+      # is required on Apple silicon anyway (KosmicKrisp).
+      - name: Toolchain
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$xcode" ]; then sudo xcode-select -s "$xcode"; fi
+          xcode-select -p
+          c++ --version
+
       - name: Dependencies
         run: >-
           brew install cmake ninja pkgconf glslang vulkan-headers vulkan-loader sdl3 ffmpeg
@@ -38,6 +48,10 @@ jobs:
       - name: Python tests
         run: python3 -m unittest discover -s tests
 
-      - name: GPU library build log
+      # All compile errors at once (build.sh stops at the first failing objects).
+      - name: GPU library errors
         if: failure()
-        run: tail -n 300 out/gpu-build.log || true
+        run: |
+          ninja -C out/gpu -k 0 bbgpu > out/gpu-all.log 2>&1 || true
+          grep -E 'error:' out/gpu-all.log | sort | uniq -c | sort -rn | head -n 150 || true
+          tail -n 60 out/gpu-all.log
