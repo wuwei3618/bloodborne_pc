@@ -23,7 +23,9 @@ the end) are what this stage needs.
   needs `std::jthread` from the C++ library of Xcode 26). Their `python3` (3.9) runs the
   preparation scripts.
 - The **x86_64 Homebrew** in `/usr/local` (next to an arm64 Homebrew in `/opt/homebrew`, if
-  you have one). Libraries for an x86_64 program must be x86_64.
+  you have one). Libraries for an x86_64 program must be x86_64. Homebrew 7 made x86_64 macOS a
+  Tier 3 platform (September 2026: no new Intel bottles, removal in September 2027), and its
+  installer no longer sets it up; `tools/macos_homebrew_x86_64.sh` does.
 - An **x86_64 KosmicKrisp**: the two driver files of shadPS4's macOS release (below), or a
   build of Mesa's KosmicKrisp for x86_64 (shadPS4 builds it with
   [shadexternals/mesa-kosmickrisp](https://github.com/shadexternals/mesa-kosmickrisp)).
@@ -34,9 +36,11 @@ the end) are what this stage needs.
 ```bash
 softwareupdate --install-rosetta --agree-to-license
 xcode-select --install
+git clone --recursive https://github.com/wuwei3618/bloodborne_pc bbport && cd bbport
+git checkout macos-port
 
-# x86_64 Homebrew (installs to /usr/local)
-arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# x86_64 Homebrew in /usr/local (asks for your password), then the libraries
+bash tools/macos_homebrew_x86_64.sh
 arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-headers vulkan-loader \
     sdl3 ffmpeg boost fmt magic_enum robin-map xxhash zydis miniz xbyak
 ```
@@ -44,8 +48,6 @@ arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-head
 ## Build and run
 
 ```bash
-git clone --recursive https://github.com/wuwei3618/bloodborne_pc bbport && cd bbport
-git checkout macos-port
 bash build.sh                          # switches to x86_64 itself on Apple silicon
 
 # The x86_64 KosmicKrisp of shadPS4's macOS release, next to bb-probe

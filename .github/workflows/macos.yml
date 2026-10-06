@@ -50,7 +50,7 @@ jobs:
         if: runner.arch == 'ARM64'
         run: |
           sudo softwareupdate --install-rosetta --agree-to-license
-          NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          bash tools/macos_homebrew_x86_64.sh
 
       - name: Dependencies
         run: >-
@@ -95,7 +95,7 @@ jobs:
 
       # All compile errors at once (build.sh stops at the first failing objects).
       - name: GPU library errors
-        if: failure()
+        if: failure() && hashFiles('out/gpu/build.ninja') != ''
         run: |
           export PATH="/usr/local/bin:$PATH"
           ninja -C out/gpu -k 0 bbgpu > out/gpu-all.log 2>&1 || true
