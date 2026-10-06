@@ -18,6 +18,13 @@ typedef struct {
 void bbgpu_register_kernel(void);
 /* Creates window, Vulkan device, presenter and GPU command processor. */
 int bbgpu_init(const BbGpuConfig *config);
+#ifdef __APPLE__
+/* macOS: AppKit takes windows and their events only on the process's main thread, so
+ * bbgpu_init is called there and creates the window on it; that thread then handles the
+ * window's events here while the game runs on another thread. Closing the window ends the
+ * process; the function does not return. */
+void bbgpu_window_loop(void);
+#endif
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */
 uintptr_t bbgpu_resolve(const char *scoped_nid);
 /* Called first by the loader's SIGSEGV handler: 1 when a GPU page-tracking fault was handled. */

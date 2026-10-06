@@ -1,8 +1,10 @@
 """Boundary tests for the native loader; uses tiny synthetic x86-64 images."""
 from paths import ROOT
 from pathlib import Path
+import os
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -139,6 +141,19 @@ class LoaderTests(unittest.TestCase):
         r = self.run_image(package(b'\xc3',capabilities=2))
         self.assertEqual(r.returncode,1)
         self.assertIn('unknown runtime capabilities',r.stderr)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'AppKit rule')
+    def test_sdl_video_starts_on_the_main_thread(self):
+        # AppKit takes windows and their events only on the main thread; elsewhere SDL's Cocoa
+        # driver reports "No available video device". Without a Vulkan driver the run then stops
+        # at the window (SDL needs the driver's surface extensions for it) or right after it.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'boot.bin'
+            path.write_bytes(package(b'\xc3'))
+            env = dict(os.environ, BB_GPU_LOG='info', VK_DRIVER_FILES=str(Path(tmp) / 'missing.json'))
+            r = subprocess.run([str(EXE.resolve()), str(path), '--user', str(Path(tmp) / 'user')],
+                               capture_output=True, text=True, timeout=60, cwd=tmp, env=env)
+        self.assertRegex(r.stderr, r'Failed to create window|Window \d+x\d+ on cocoa', r.stdout + r.stderr)
 
 
 if __name__ == '__main__':

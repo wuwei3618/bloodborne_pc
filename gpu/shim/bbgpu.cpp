@@ -169,11 +169,24 @@ s32 PS4_SYSV_ABI sceKernelUsleep(u32 microseconds) {
 } // namespace Libraries::Kernel
 
 namespace {
-// SDL video must be driven from one thread: the window lives on its own host thread.
+// SDL video must be driven from one thread: the window lives on its own host thread (on macOS
+// the process's main thread, see bbgpu_window_loop).
+#ifndef __APPLE__
 std::thread g_window_thread;
 std::mutex g_window_mutex;
 std::condition_variable g_window_cv;
 bool g_window_ready;
+#endif
+
+// The window's events until the user closes it, which ends the process.
+[[noreturn]] void RunWindow(Frontend::WindowSDL* window) {
+    while (window->PollEvents()) {
+        SDL_Delay(2);
+    }
+    LOG_INFO(Frontend, "Window closed by user");
+    std::fflush(stdout);
+    std::_Exit(0);
+}
 } // namespace
 
 u32 BbDisplayRefreshHz() {
@@ -215,6 +228,10 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     Core::Emulator::FillElfInfo(*config);
     const std::string title = config->title ? config->title : "Bloodborne";
     const s32 width = config->width, height = config->height;
+#ifdef __APPLE__
+    // AppKit: this is the process's main thread; it handles the window in bbgpu_window_loop.
+    g_window = new Frontend::WindowSDL(width, height, title.c_str());
+#else
     g_window_thread = std::thread([title, width, height] {
         Common::SetCurrentThreadName("bb:window");
         auto* window = new Frontend::WindowSDL(width, height, title.c_str());
@@ -224,24 +241,26 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
             g_window_ready = true;
         }
         g_window_cv.notify_all();
-        while (window->PollEvents()) {
-            SDL_Delay(2);
-        }
-        LOG_INFO(Frontend, "Window closed by user");
-        std::fflush(stdout);
-        std::_Exit(0);
+        RunWindow(window);
     });
     g_window_thread.detach();
     {
         std::unique_lock lock{g_window_mutex};
         g_window_cv.wait(lock, [] { return g_window_ready; });
     }
+#endif
     Core::Loader::SymbolsResolver resolver;
     // GnmDriver creates the presenter that the VideoOut present thread uses.
     Libraries::GnmDriver::RegisterLib(&resolver);
     Libraries::VideoOut::RegisterLib(&resolver);
     return 0;
 }
+
+#ifdef __APPLE__
+extern "C" void bbgpu_window_loop(void) {
+    RunWindow(g_window);
+}
+#endif
 
 namespace Libraries::Kernel { void StartKernelService(); }
 extern "C" void bbgpu_register_kernel(void) {
