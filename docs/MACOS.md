@@ -10,8 +10,9 @@ an x86_64 process cannot load it.
 its tests there and packages the build; an Apple silicon Mac without any x86_64 libraries then
 runs the packaged programs and tests under Rosetta 2. The tests cover the runtime (guest TLS,
 guest memory, locks, semaphores, files), the GPU library parts that need no GPU, and the loader
-on small synthetic x86-64 images. The game itself has **not been run on a Mac yet** — reports
-(logs, see the end) are what this stage needs.
+on small synthetic x86-64 images; the package's KosmicKrisp loads there too (the runner's
+virtual GPU cannot run it). The game itself has **not been run on a Mac yet** — reports (logs,
+see the end) are what this stage needs.
 
 ## Requirements
 
@@ -84,6 +85,8 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   FSR 3.1 are the upscalers to try.
 - Guest memory uses POSIX shared memory and a reservation of the guest address range at start;
   host objects the game can see come from an allocator below 1 TiB (`src/runtime_heap.c`).
+  Under Rosetta 2 the system already uses 63–64 GiB (the commpage) and 64–448 GiB, so the
+  game's memory starts at 448 GiB (0x7000000000; shadPS4's macOS build uses the same start).
 - The game's thread pointer is read from a pthread TSD slot (macOS keeps GS for itself).
 - Helper threads run at the utility QoS class instead of `SCHED_IDLE`; frame statistics do not
   include the GPU command thread's CPU time.

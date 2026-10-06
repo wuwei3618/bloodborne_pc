@@ -130,12 +130,14 @@ jobs:
           cat usage.txt
           test "$status" = 1 && grep -q Usage usage.txt
 
-      # Vulkan without the game through the package's KosmicKrisp. The runner's virtual GPU may
-      # not support it: informative only.
-      - name: Vulkan through KosmicKrisp (informative)
-        continue-on-error: true
+      # Vulkan without the game through the package's KosmicKrisp: the driver must load under
+      # Rosetta 2 and create an instance. The runner's virtual GPU has no Metal 4, so no device
+      # there is expected; a Mac prints its GPU and PASS.
+      - name: Vulkan through KosmicKrisp
         timeout-minutes: 5
         run: |
-          system_profiler SPDisplaysDataType | head -n 12
           cd dist/bbport-macos-x86_64
-          VK_LOADER_DEBUG=error,warn,driver bin/bb-probe --vulkan-only
+          status=0; VK_LOADER_DEBUG=error,warn,driver bin/bb-probe --vulkan-only > vulkan.txt 2>&1 || status=$?
+          cat vulkan.txt
+          grep -q 'readback PASS' vulkan.txt ||
+            { test "$status" = 1 && grep -q 'vkEnumeratePhysicalDevices.*returned -3' vulkan.txt; }
