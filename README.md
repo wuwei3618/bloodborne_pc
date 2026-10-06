@@ -212,7 +212,7 @@ More in [docs/](docs); recent changes: [docs/CHANGES_2026-10-02.md](docs/CHANGES
 | `docs/` | Design notes and measurements ([upscaler](docs/upscaler.md), [parallel GPU](docs/parallel_gpu.md), [motion vectors](docs/motion_vectors.md), [roadmap](docs/ROADMAP.md)) |
 
 Tests: `bash build.sh --test`, `python3 -m unittest discover -s tests`, and
-`ninja -C out/gpu motion-history-test ui-composition-test scene-resolution-test motion-shader-test`.
+`ninja -C out/gpu motion-history-test ui-composition-test scene-resolution-test motion-shader-test hle-thread-test`.
 
 ## Roadmap
 
