@@ -20,6 +20,7 @@
 #include "core/libraries/videoout/video_out.h"
 #include "core/memory.h"
 #include "core/platform.h"
+#include "bbport_submission_gate.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -64,9 +65,7 @@ static constexpr std::array indirect_sgpr_offsets{0u, 0u, 0x4cu, 0u, 0xccu, 0u, 
 static constexpr bool UseNeoCompatSequences = false;
 
 // In case if `submitDone` is issued we need to block submissions until GPU idle
-static u32 submission_lock{};
-std::condition_variable cv_lock{};
-std::mutex m_wait_idle{};
+static BbPort::SubmissionGate submission_gate;
 std::mutex m_submit_lock{};
 static u64 frames_submitted{};      // frame counter
 static bool send_init_packet{true}; // initialize HW state before first game's submit in a frame
@@ -79,15 +78,13 @@ static VAddr tessellation_factors_ring_addr = -1;
 static constexpr u32 tessellation_offchip_buffer_size = 0x800000u;
 
 static void ResetSubmissionLock(Platform::InterruptId irq) {
-    std::unique_lock lock{m_wait_idle};
-    submission_lock = 0;
-    cv_lock.notify_all();
+    // bbport: also signalled after a pass that ended with work queued (see SubmissionGate).
+    submission_gate.Open([] { return liverpool->IsGpuIdle(); });
 }
 
 static void WaitGpuIdle() {
     HLE_TRACE;
-    std::unique_lock lock{m_wait_idle};
-    cv_lock.wait(lock, [] { return submission_lock == 0; });
+    submission_gate.Wait();
 }
 
 // Write a special ending NOP packet with N DWs data block
@@ -162,7 +159,7 @@ s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
 
 int PS4_SYSV_ABI sceGnmAreSubmitsAllowed() {
     LOG_TRACE(Lib_GnmDriver, "called");
-    return submission_lock == 0;
+    return submission_gate.IsOpen();
 }
 
 int PS4_SYSV_ABI sceGnmBeginWorkload(u32 workload_stream, u64* workload) {
@@ -2357,9 +2354,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
     LOG_DEBUG(Lib_GnmDriver, "called");
     std::scoped_lock lk{m_submit_lock};
     WaitGpuIdle();
-    if (!liverpool->IsGpuIdle()) {
-        submission_lock = true;
-    }
+    submission_gate.Close([] { return liverpool->IsGpuIdle(); });
     liverpool->SubmitDone();
     send_init_packet = true;
     ++frames_submitted;

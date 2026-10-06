@@ -75,8 +75,8 @@ arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-head
 
 ```bash
 BB_LTO=OFF bash build.sh --test            # 在 arm64 shell 里直接跑，它会自己切到 arch -x86_64 /bin/bash
-PATH=/usr/local/bin:$PATH ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test hle-thread-test
-for t in motion-history-test ui-composition-test motion-shader-test hle-thread-test; do ./out/gpu/$t; done
+PATH=/usr/local/bin:$PATH ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test
+for t in motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test; do ./out/gpu/$t; done
 python3 -m unittest discover -s tests
 ```
 
