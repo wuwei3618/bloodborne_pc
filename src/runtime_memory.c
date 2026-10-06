@@ -85,6 +85,16 @@ static void read_unlock(void) { if (!exclusive_depth) pthread_rwlock_unlock(&loc
 #endif
 static Block blocks[LIMIT];
 static Vma *vmas; static size_t vma_count, vma_capacity;
+/* Parts of the guest range the host had mapped before reserving it (macOS on Apple silicon:
+ * the commpage region at 63 GiB, in every process): never handed out or replaced. */
+typedef struct { uintptr_t start, end; } HostRange;
+static HostRange host_ranges[32]; static size_t host_range_count;
+/* End of the first host range overlapping [start,end), or 0. */
+static uintptr_t host_overlap(uintptr_t start, uintptr_t end) {
+    for (size_t i=0; i<host_range_count; ++i)
+        if (start<host_ranges[i].end && host_ranges[i].start<end) return host_ranges[i].end;
+    return 0;
+}
 static int pool_fd=-1;
 static unsigned char *backing_base; /* second view of the pool: host writes bypass guest/GPU page protection */
 #define FLEX_SPAN (UINT64_C(1024) * 1024 * 1024)
@@ -236,7 +246,10 @@ static int overlaps(uintptr_t start, uintptr_t end, int ignore_reserved) {
 /* First-fit search in the PS4 user range, starting from the hint. */
 static uintptr_t find_free(uintptr_t hint, uint64_t size, uint64_t alignment) {
     uintptr_t at=align_up(hint<USER_MIN ? USER_MIN : hint, alignment);
-    for (size_t i=vma_index(at); at+size<=USER_MAX; ++i) {
+    while (at+size<=USER_MAX) {
+        uintptr_t host=host_overlap(at,at+size);
+        if (host) { at=align_up(host,alignment); continue; }
+        size_t i=vma_index(at);
         if (i==vma_count || vmas[i].start>=at+size) return at;
         at=align_up(vmas[i].end,alignment);
     }
@@ -261,6 +274,7 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
     if (flags & MAP_FIXED_FLAG) {
         if (!address || address%PAGE) return INVALID;
         if ((flags & MAP_NO_OVERWRITE) && overlaps(address,address+size,1)) return NO_MEMORY;
+        if (host_overlap(address,address+size)) return NO_MEMORY;
     } else {
         address=find_free(address,size,alignment);
         if (!address) return NO_MEMORY;
@@ -549,25 +563,53 @@ static uintptr_t low_next=LOW_MIN;
 #ifdef __APPLE__
 /* macOS puts other mappings (libraries, the GPU driver's memory) wherever there is room, so
  * [LOW_MIN, USER_MAX) is reserved once: guest and low mappings replace parts of the
- * reservation, and released parts return to it. */
+ * reservation, and released parts return to it. What the host has mapped there already stays
+ * the host's (host_ranges). */
 static int space_reserved;
+/* Gives the reserved parts of [LOW_MIN, end) back (a reservation that failed). */
+static void unreserve(uintptr_t end) {
+    uintptr_t at=LOW_MIN;
+    for (size_t i=0; i<=host_range_count && at<end; ++i) {
+        uintptr_t stop=i<host_range_count && host_ranges[i].start<end ? host_ranges[i].start : end;
+        if (stop>at) munmap((void *)at,stop-at);
+        if (i<host_range_count) at=host_ranges[i].end;
+    }
+}
 static void guest_space(void) {
     static int tried;
     if (tried) return;
     tried=1;
-    void *at=mmap((void *)LOW_MIN,USER_MAX-LOW_MIN,PROT_NONE,MAP_PRIVATE|MAP_ANON|MAP_NORESERVE,-1,0);
-    if (at==(void *)LOW_MIN) {
-        space_reserved=1;
-        printf("Runtime: guest range 0x%" PRIx64 "-0x%" PRIx64 " reserved\n",LOW_MIN,USER_MAX);
-        return;
+    for (uintptr_t at=LOW_MIN; at<USER_MAX;) {
+        /* The next host mapping at or after at (none: the rest of the range is free). */
+        mach_vm_address_t address=at; mach_vm_size_t size=0; mach_port_t object=MACH_PORT_NULL;
+        vm_region_basic_info_data_64_t info; mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;
+        if (mach_vm_region(mach_task_self(),&address,&size,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&count,&object)!=KERN_SUCCESS ||
+            address>=USER_MAX)
+            address=USER_MAX;
+        if (address>at) {
+            void *p=mmap((void *)at,address-at,PROT_NONE,MAP_PRIVATE|MAP_ANON|MAP_NORESERVE,-1,0);
+            if (p!=(void *)at) {
+                if (p!=MAP_FAILED) munmap(p,address-at);
+                unreserve(at);
+                fprintf(stderr,"Runtime: WARNING: guest range 0x%" PRIx64 "-0x%" PRIx64 " could not be reserved; "
+                        "continuing without a reservation\n",(uint64_t)at,(uint64_t)address);
+                return;
+            }
+        }
+        if (address>=USER_MAX) break;
+        uintptr_t end=address+size<USER_MAX ? (uintptr_t)(address+size) : (uintptr_t)USER_MAX;
+        if (host_range_count==sizeof(host_ranges)/sizeof(*host_ranges)) {
+            unreserve(address);
+            fputs("Runtime: WARNING: guest range too fragmented; continuing without a reservation\n",stderr);
+            return;
+        }
+        host_ranges[host_range_count++]=(HostRange){address>at ? (uintptr_t)address : at,end};
+        printf("Runtime: guest range: 0x%" PRIx64 "-0x%" PRIx64 " is the host's, left out\n",
+               (uint64_t)host_ranges[host_range_count-1].start,(uint64_t)end);
+        at=end;
     }
-    if (at!=MAP_FAILED) munmap(at,USER_MAX-LOW_MIN);
-    mach_vm_address_t address=LOW_MIN; mach_vm_size_t size=0; mach_port_t object=MACH_PORT_NULL;
-    vm_region_basic_info_data_64_t info; mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;
-    if (mach_vm_region(mach_task_self(),&address,&size,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&count,&object)!=KERN_SUCCESS)
-        address=size=0;
-    fprintf(stderr,"Runtime: WARNING: guest range 0x%" PRIx64 "-0x%" PRIx64 " is in use (0x%llx, 0x%llx bytes); "
-            "continuing without a reservation\n",LOW_MIN,USER_MAX,(unsigned long long)address,(unsigned long long)size);
+    space_reserved=1;
+    printf("Runtime: guest range 0x%" PRIx64 "-0x%" PRIx64 " reserved\n",LOW_MIN,USER_MAX);
 }
 static int release_range(uintptr_t start, uint64_t size) {
     if (space_reserved)
@@ -584,6 +626,8 @@ void *runtime_low_map(size_t size, int prot) {
     guest_space();
     void *p=MAP_FAILED;
     while (low_next+size<=USER_MIN) {
+        uintptr_t host=host_overlap(low_next,low_next+size);
+        if (host) { low_next=align_up(host,PAGE); continue; }
 #ifdef __APPLE__
         if (space_reserved) p=mmap((void *)low_next,size,prot,MAP_PRIVATE|MAP_ANON|MAP_FIXED,-1,0);
         else {
