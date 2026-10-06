@@ -11,6 +11,34 @@ void runtime_restart(void) { abort(); }
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
+#ifdef __APPLE__
+/* macOS has no POSIX barriers: a counting barrier on a mutex and a condition variable. */
+typedef struct { pthread_mutex_t lock; pthread_cond_t cond; unsigned count, waiting, cycle; } pthread_barrier_t;
+#define PTHREAD_BARRIER_SERIAL_THREAD (-1)
+static int pthread_barrier_init(pthread_barrier_t *b, const void *attr, unsigned count) {
+    (void)attr;
+    b->count=count; b->waiting=0; b->cycle=0;
+    int e=pthread_mutex_init(&b->lock,NULL);
+    return e ? e : pthread_cond_init(&b->cond,NULL);
+}
+static int pthread_barrier_destroy(pthread_barrier_t *b) {
+    int e=pthread_cond_destroy(&b->cond);
+    return e ? e : pthread_mutex_destroy(&b->lock);
+}
+static int pthread_barrier_wait(pthread_barrier_t *b) {
+    pthread_mutex_lock(&b->lock);
+    unsigned cycle=b->cycle;
+    int result=0;
+    if (++b->waiting==b->count) {
+        b->waiting=0; ++b->cycle; result=PTHREAD_BARRIER_SERIAL_THREAD;
+        pthread_cond_broadcast(&b->cond);
+    } else {
+        while (cycle==b->cycle) pthread_cond_wait(&b->cond,&b->lock);
+    }
+    pthread_mutex_unlock(&b->lock);
+    return result;
+}
+#endif
 
 typedef int (ABI *Register)(GuestCallback);
 typedef int (ABI *RegisterCxa)(void (ABI *)(void *), void *, void *);
