@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
 #include <pthread.h>
 #include <sys/resource.h>
@@ -702,6 +703,115 @@ void ScanDcb(std::span<const u32> dcb, int depth) {
 }
 } // namespace
 
+// bbport: BB_PM4_CHECK=1 — does a graphics submission change between its submit (game thread)
+// and its processing (GPU thread)? The submitted dwords are kept; processing compares them
+// with guest memory when it starts and when a packet cannot be parsed.
+namespace {
+struct Pm4Submitted {
+    u64 seq;
+    std::vector<u32> dwords;
+};
+std::mutex g_pm4_mutex;
+std::deque<Pm4Submitted> g_pm4_submitted;
+std::atomic<u64> g_pm4_latest{0};
+std::atomic<u32> g_pm4_reports{0};
+
+bool Pm4Check() {
+    static const bool enabled = EmulatorSettingsImpl::Flag("BB_PM4_CHECK", false);
+    return enabled;
+}
+
+// The first 40 reports, then every 100th.
+bool Pm4Report() {
+    const u32 n = g_pm4_reports.fetch_add(1, std::memory_order_relaxed);
+    return n < 40 || n % 100 == 0;
+}
+
+// Offset of the first dword that is neither a type-2 nor a whole type-3 packet, or -1.
+s64 Pm4Malformed(std::span<const u32> dcb) {
+    size_t at = 0;
+    while (at < dcb.size()) {
+        const auto* header = reinterpret_cast<const PM4Header*>(dcb.data() + at);
+        if (header->type == 2) {
+            ++at;
+            continue;
+        }
+        const size_t next = at + header->type3.NumWords() + 1;
+        if (header->type != 3 || next > dcb.size()) {
+            return s64(at);
+        }
+        at = next;
+    }
+    return -1;
+}
+
+void Pm4Remember(u64 seq, std::span<const u32> dcb) {
+    g_pm4_latest.store(seq, std::memory_order_relaxed);
+    if (const s64 at = Pm4Malformed(dcb); at >= 0 && Pm4Report()) {
+        LOG_WARNING(Lib_GnmDriver, "PM4 check: submission {} ({} dwords at {:#x}) malformed when "
+                    "submitted at +{}: {:#010x}", seq, dcb.size(), uintptr_t(dcb.data()), at,
+                    dcb[at]);
+    }
+    std::scoped_lock lock{g_pm4_mutex};
+    g_pm4_submitted.push_back({seq, std::vector<u32>(dcb.begin(), dcb.end())});
+    while (g_pm4_submitted.size() > 512) {
+        g_pm4_submitted.pop_front();
+    }
+}
+
+std::vector<u32> Pm4Take(u64 seq) {
+    std::scoped_lock lock{g_pm4_mutex};
+    while (!g_pm4_submitted.empty() && g_pm4_submitted.front().seq < seq) {
+        g_pm4_submitted.pop_front();
+    }
+    if (g_pm4_submitted.empty() || g_pm4_submitted.front().seq != seq) {
+        return {};
+    }
+    std::vector<u32> dwords = std::move(g_pm4_submitted.front().dwords);
+    g_pm4_submitted.pop_front();
+    return dwords;
+}
+
+void Pm4Compare(u64 seq, std::span<const u32> dcb, const std::vector<u32>& submitted,
+                const char* when) {
+    if (submitted.size() != dcb.size()) {
+        return;
+    }
+    size_t changed = 0, first = 0;
+    for (size_t i = 0; i < dcb.size(); ++i) {
+        if (dcb[i] != submitted[i] && changed++ == 0) {
+            first = i;
+        }
+    }
+    if (changed && Pm4Report()) {
+        const u64 latest = g_pm4_latest.load(std::memory_order_relaxed);
+        LOG_WARNING(Lib_GnmDriver, "PM4 check: submission {} ({} dwords at {:#x}) changed after "
+                    "submit ({}): {} dwords differ, first at +{}: {:#010x} -> {:#010x}; {} later "
+                    "submissions queued; now malformed at +{}", seq, dcb.size(),
+                    uintptr_t(dcb.data()), when, changed, first, submitted[first], dcb[first],
+                    latest > seq ? latest - seq : 0, Pm4Malformed(dcb));
+    }
+}
+
+// A packet the parser cannot handle: where it is, and what the game had submitted there.
+void Pm4Invalid(u64 seq, std::span<const u32> buffer, const std::vector<u32>& submitted,
+                std::span<const u32> rest) {
+    if (!Pm4Check()) {
+        return;
+    }
+    const size_t at = rest.data() - buffer.data();
+    LOG_WARNING(Lib_GnmDriver, "PM4 check: unparsable packet in {} ({} dwords at {:#x}) at +{}: "
+                "{:#010x}; submitted {}; submitted buffer malformed at +{}",
+                seq == Liverpool::NoSeq ? "a nested buffer" : "a submission", buffer.size(),
+                uintptr_t(buffer.data()), at, rest[0],
+                at < submitted.size() ? fmt::format("{:#010x}", submitted[at]) : "unknown",
+                submitted.empty() ? s64(-2) : Pm4Malformed(submitted));
+    if (seq != Liverpool::NoSeq) {
+        Pm4Compare(seq, buffer, submitted, "at the unparsable packet");
+    }
+}
+} // namespace
+
 Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb,
                                            u64 seq) {
     FIBER_ENTER(dcb_task_name);
@@ -710,6 +820,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
         seq != NoSeq && rasterizer ? &rasterizer->GetDrawPreparation() : nullptr;
     if (draw_prep) {
         draw_prep->BeginSubmission(seq, regs, gfx_reg_checksum);
+    }
+    const std::span<const u32> pm4_buffer = dcb;
+    std::vector<u32> pm4_submitted;
+    if (Pm4Check() && seq != NoSeq) {
+        pm4_submitted = Pm4Take(seq);
+        Pm4Compare(seq, dcb, pm4_submitted, "when processing starts");
     }
     static const bool dcb_stats = EmulatorSettingsImpl::Flag("BB_DCB_STATS", false);
     const int dcb_depth = g_dcb_depth;
@@ -738,9 +854,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         switch (type) {
         default:
+            Pm4Invalid(seq, pm4_buffer, pm4_submitted, dcb);
             UNREACHABLE_MSG("Wrong PM4 type {}", type);
             break;
         case 0:
+            Pm4Invalid(seq, pm4_buffer, pm4_submitted, dcb);
             UNREACHABLE_MSG("Unimplemented PM4 type 0, base reg: {}, size: {}",
                             header->type0.base.Value(), header->type0.NumWords());
             break;
@@ -751,6 +869,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
         case 3:
             const u32 count = header->type3.NumWords();
             const PM4ItOpcode opcode = header->type3.opcode;
+            if (count + 1 > dcb.size()) {
+                Pm4Invalid(seq, pm4_buffer, pm4_submitted, dcb);
+            }
             ApplyGraphicsRegisterPacket(regs, header, gfx_reg_checksum, &pipe_dirty);
             // DmaData to 0x3022C does nothing here (skipped below): no need to wait.
             if (rasterizer && !PipelinedOpcode(opcode) &&
@@ -1698,6 +1819,9 @@ void Liverpool::SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb) {
         if (draw_prep) {
             seq = gfx_submit_seq++;
             draw_prep->Enqueue(seq, std::move(prep_submission));
+            if (Pm4Check()) {
+                Pm4Remember(seq, dcb);
+            }
         }
         auto task = ProcessGraphics(dcb, ccb, seq);
         queue.submits.emplace(task.handle);
