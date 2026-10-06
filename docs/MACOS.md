@@ -11,8 +11,11 @@ its tests there and packages the build; an Apple silicon Mac without any x86_64 
 runs the packaged programs and tests under Rosetta 2. The tests cover the runtime (guest TLS,
 guest memory, locks, semaphores, files), the GPU library parts that need no GPU, and the loader
 on small synthetic x86-64 images; the package's KosmicKrisp loads there too (the runner's
-virtual GPU cannot run it). The game itself has **not been run on a Mac yet** — reports (logs,
-see the end) are what this stage needs.
+virtual GPU cannot run it). The game has run on a Mac (M5 Pro, macOS 27.2, October 2026, the
+CI package of `macos-port`): it starts, plays its movies, and the character creator, the
+opening and the first area work, with a DualSense. Menus run at 60 to 120 FPS, heavy scenes at
+about 25 to 40 FPS: under Rosetta 2 the GPU command thread is the limit there. See
+[Known issues](#known-issues); reports (logs, see the end) are still welcome.
 
 ## Requirements
 
@@ -20,7 +23,8 @@ see the end) are what this stage needs.
   Metal 4. Rosetta 2 runs any x86_64 program through macOS 27; Apple keeps only a subset of
   it, for older games, from macOS 28 on.
 - Python 3.9 or newer for the preparation scripts: `xcode-select --install` provides one.
-- Your dump of Bloodborne CUSA03173, version 1.09.
+- Your dump of Bloodborne, version 1.09: CUSA03173, or an edition with the same 1.09 eboot
+  (the Asian Old Hunters Edition, CUSA03023, was used on the Mac).
 
 ## The prebuilt package
 
@@ -79,17 +83,32 @@ BB_GAME_DIR=/path/to/CUSA03173 bash run.sh 2>&1 | tee bbport-macos.log
 manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does with
 [shadexternals/mesa-kosmickrisp](https://github.com/shadexternals/mesa-kosmickrisp).
 
+## Known issues
+
+- The first time an area, an effect or a menu appears, its shaders and pipelines are compiled;
+  on a Mac one pipeline can take up to about 2 s, so new areas stutter at first. KosmicKrisp
+  keeps no disk cache of its own: the port saves the pipelines it used (`user/cache`) and
+  compiles them again at the next start, before the title screen (about 15 s for 700).
+- With a frame rate patch (`BB_FPS=60`, or `uncap`, the default) the character creator shows no
+  character model; with `BB_FPS=30` (the game's own 30 FPS, no patch) it does. In the game
+  itself models are shown with every preset. To see the model while creating a character,
+  start with `BB_FPS=30`, and restart with your preset afterwards.
+- FSR 3.1 does not start on KosmicKrisp yet (`Upscaler: FSR 3 context creation failed` in the
+  log); the game is then shown without the port's upscaler. TAA is untested on a Mac.
+
 ## Differences from Linux
 
-- FSR 4 and FSR 4.1.1 need AMD-specific Vulkan features and fall back to FSR 3.1; TAA and
-  FSR 3.1 are the upscalers to try.
+- FSR 4 and FSR 4.1.1 need AMD-specific Vulkan features and fall back to FSR 3.1, which does
+  not start on KosmicKrisp yet (see above).
 - Guest memory uses POSIX shared memory and a reservation of the guest address range at start;
   host objects the game can see come from an allocator below 1 TiB (`src/runtime_heap.c`).
   Under Rosetta 2 the system already uses 63–64 GiB (the commpage) and 64–448 GiB, so the
   game's memory starts at 448 GiB (0x7000000000; shadPS4's macOS build uses the same start).
 - The game's thread pointer is read from a pthread TSD slot (macOS keeps GS for itself).
-- Helper threads run at the utility QoS class instead of `SCHED_IDLE`; frame statistics do not
-  include the GPU command thread's CPU time.
+- Helper threads run at the utility QoS class instead of `SCHED_IDLE`; the GPU command thread's
+  CPU time in the frame statistics comes from `thread_info`.
+- The game window and its events belong to the process's main thread (AppKit); the game's main
+  thread runs on a thread of its own.
 
 ## Reporting
 
@@ -101,4 +120,8 @@ sysctl -n machdep.cpu.brand_string; sw_vers
 ```
 
 If the game stops with a fault, the log ends with the guest offset and a thread dump; with
-`BB_TIMEOUT=60` the watchdog dumps all threads after 60 seconds (a hang).
+`BB_TIMEOUT=60` the watchdog dumps all threads after 60 seconds (a hang). On a Mac that dump
+can stop early: the signal that collects it wakes a waiting game thread, which then faults
+(`Guest fault (signal 10) at guest offset 0x53b3260`); `sample <pid>` gives the threads'
+stacks of a running game instead. `BB_FRAME_STATS=1` adds frame rate and stall figures every
+5 seconds.

@@ -1,11 +1,11 @@
 # macOS 移植交接（给 Mac 本地的 Claude 会话）
 
 到 2026-10-06 为止，macOS 移植一直在云端会话里做（那里没有 Mac，只能靠 GitHub Actions 验证）。
-接下来的真机测试和修改交给 Mac 本地会话。用户的 Mac：**M5 Pro，macOS 27**。
+从 2026-10-06 起，真机测试和修改由 Mac 本地会话负责。用户的 Mac：M5 Pro，macOS 27.2。
 
-**一句话现状**：分支 `macos-port` 上，x86_64 版（Apple 芯片上走 Rosetta 2）能编译，运行时 /
-GPU 库 / Python 测试在 Intel Mac 和 Apple 芯片（Rosetta 2）上都通过，CI 自动产出预编译包；
-**游戏本体还从没在 Mac 上跑过**，这是下一步的主要任务。
+现状（2026-10-07）：游戏已经在这台 Mac 上运行起来。用 CI 的预编译包可以启动游戏、播放影片、创建角色、
+进入第一个区域，DualSense 手柄可用。菜单 60 到 120 FPS，复杂场景约 25 到 40 FPS，瓶颈是 Rosetta 2 下的
+GPU 命令线程。真机测试中发现的问题和处理结果见第 5 节第 10 至 17 条和第 6.1 节，没做完的事见第 9 节。
 
 ## 0. 开工清单
 
@@ -14,10 +14,13 @@ GPU 库 / Python 测试在 Intel Mac 和 Apple 芯片（Rosetta 2）上都通过
 3. 第一轮测试用 CI 的预编译包（第 3.1 节），不必先搭编译环境。
 4. 需要改代码时再搭本地编译环境（第 3.2 节），或者走“推送 → CI 出包 → 下载测试”的循环。
 5. 按第 6 节的预期日志逐项对照，出问题按第 7 节排查。
+6. 本机上游戏目录和测试包的位置见第 2 节。
 
 ## 1. 当前状态
 
-- 提交：`0c62f20` … `c9df91f`（`git log 5224a6d..macos-port`），全部在 `macos-port`，未合并到 main。
+- 提交：`0c62f20` … `d9ae010`（`git log 5224a6d..macos-port`），全部在 `macos-port`，未合并到 main。
+  真机测试期间的提交：`1c23636`（窗口放到主线程）、`8d2768f`（影片停止时的线程等待）、
+  `7fb005a`（`BB_PM4_CHECK` 诊断）、`d9ae010`（提交节流的空闲信号）。
 - CI：`.github/workflows/macos.yml`，每次推送跑两个任务（约 15 分钟）：
   - **Intel (x86_64)**（`macos-15-intel`）：x86_64 Homebrew 装依赖 → `build.sh --test` → GPU 库测试 →
     Python 测试 → `packaging/macos_package.sh --tests` → 上传产物 `bbport-macos-x86_64`（用户包，
@@ -25,18 +28,26 @@ GPU 库 / Python 测试在 Intel Mac 和 Apple 芯片（Rosetta 2）上都通过
   - **Apple silicon (x86_64 under Rosetta 2)**（`macos-26`，机器上**没有**任何 x86_64 库）：下载两个
     产物，在 Rosetta 下跑运行时 / GPU 库 / Python 测试，启动包里的 `bin/bb-probe`，再用包里的
     KosmicKrisp 跑 `--vulkan-only`（虚拟机没有能用的 GPU，预期返回 -3；真机应打印 GPU 名和 PASS）。
-- 最新绿色构建：第 12 轮，https://github.com/wuwei3618/bloodborne_pc/actions/runs/37444909285
-- Linux 行为没变：所有 macOS 代码都在 `__APPLE__` 分支或 `src/platform.h` 里；每轮改动都在 Linux
-  （nix-shell）上跑过 `build.sh --test` 和 82 项 Python 测试。仓库**没有 Linux CI**。
+- 最新绿色构建：第 16 轮，https://github.com/wuwei3618/bloodborne_pc/actions/runs/37467304654
+- Linux：到 `c9df91f` 为止，所有 macOS 代码都在 `__APPLE__` 分支或 `src/platform.h` 里，每轮改动都在 Linux
+  （nix-shell）上运行过 `build.sh --test` 和 82 项 Python 测试。`8d2768f`、`7fb005a`、`d9ae010` 改的是
+  Linux 和 macOS 共用的代码（`gpu/shim/core/libraries/kernel/threads.h`、`liverpool.cpp`、`gnmdriver.cpp`），
+  还没在 Linux 上验证，合并前要补做。仓库没有 Linux CI。
 
 ## 2. 用户的环境与限制
 
-- M5 Pro，macOS 27。CI 用的是 macOS 26 + Xcode 26.6，**macOS 27 和 Xcode/CLT 27 都没测过**。
+- M5 Pro，macOS 27.2，CLT 27.2（Apple clang 21）。CI 用的是 macOS 26 + Xcode 26.6。预编译包在 macOS 27.2 上
+  运行正常；本地还没用 CLT 27 完整编译过，只对改过的源文件做过 x86_64 的 `clang -fsyntax-only` 检查。
   构建用 `-Werror`，新版 clang 多出的警告可能让编译失败，遇到了就改代码。
 - Rosetta 2 只完整支持到 macOS 27，从 macOS 28 起只保留面向老游戏的一部分。x86 方案大约还有一年的窗口期。
 - Homebrew 7（2026 年 9 月）把 Intel macOS 降为 Tier 3：官方安装脚本拒绝装 x86_64 版，新版本的公式
   大多没有 Intel 预编译包（会从源码编），2027 年 9 月完全移除。
-- 游戏 dump（CUSA03173 v1.09）只在用户本地，**不要上传、不要提交**任何游戏文件。
+- 游戏 dump 只在用户本地，不要上传、不要提交任何游戏文件。本机的位置：
+  - 游戏目录：`~/Code/Bloodborne/CUSA03023`（亚洲版 1.09，见第 5 节第 14 条）。
+  - 测试用的包：`~/Code/Bloodborne/ci-<run-id>/bbport-macos-x86_64`。存档和管线缓存在包目录的 `user/` 下，
+    换新包时要把 `user/` 复制过去。
+- 本机 zsh 里的 `grep` 是调用 ugrep 的函数，处理 `strings` 之类的输出时会把输入当成二进制文件，不打印结果。
+  这种情况改用 `/usr/bin/grep`。
 
 ## 3. 怎么跑起来
 
@@ -44,7 +55,9 @@ GPU 库 / Python 测试在 Intel Mac 和 Apple 芯片（Rosetta 2）上都通过
 
 产物 `bbport-macos-x86_64`（25 MB）：
 - 网页下载：打开上面那个 run → Artifacts；
-- 命令行下载：`gh run download <run-id> -n bbport-macos-x86_64 -D <目录>`。
+- 命令行下载：`gh run download <run-id> -n bbport-macos-x86_64 -D <目录>`。本机上这个命令有时一直不写出文件，
+  可以改用 `gh api repos/wuwei3618/bloodborne_pc/actions/artifacts/<artifact-id>/zip > pkg.zip`
+  （产物号用 `gh api repos/wuwei3618/bloodborne_pc/actions/runs/<run-id>/artifacts` 查，25 MB 约需 5 分钟）。
 
 具体步骤见 `docs/MACOS.md` 的 “The prebuilt package” 一节：
 ```bash
@@ -113,7 +126,12 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
 | `packaging/macos_bundle.py` | 把 Homebrew 库收进 `lib/`，按程序引用时的名字存放（`libvulkan.1.dylib` 会被 GPU 库按名字 dlopen），引用全改成 `@rpath`，重新做 ad-hoc 签名，最后检查没有外部路径残留 |
 | `packaging/macos_package.sh` | 组装用户包（含固定版本并校验 sha256 的 shadPS4 KosmicKrisp）；`--tests` 额外打测试程序包 |
 | `tools/macos_homebrew_x86_64.sh` | 手动装 x86_64 Homebrew（官方安装脚本拒绝 Intel） |
-| `tests/` | `test_runtime.c` 补了 macOS 没有的 `pthread_barrier`；GPU 测试桩改用 `__thread`；两个 Python 测试把临时目录解析成真实路径 |
+| `src/probe.c`（真机） | macOS 上模块初始化和游戏入口（`start_game`）在新线程（8 MiB 栈）上运行，进程主线程进入 `bbgpu_window_loop` 处理窗口事件；`--cpu-only` 时主线程只等待 |
+| `gpu/shim/bbgpu.cpp` | macOS 上 `bbgpu_init` 在调用线程（主线程）上直接创建窗口；`bbgpu_window_loop` 运行事件循环 |
+| `gpu/shim/core/libraries/kernel/threads.h` | AvPlayer 用的线程封装：加锁，多个线程同时 join 时只由一个调用者真正 join，线程结束自己的对象时只在没人 join 时 detach |
+| `gpu/shim/bbport_submission_gate.h` + `gnmdriver.cpp` | 提交锁（`BbPort::SubmissionGate`）：设置和清除都在互斥锁内读取 GPU 当时的状态，GPU 还有提交时收到的空闲信号不清除提交锁 |
+| `liverpool.cpp` | `BB_PM4_CHECK=1`：提交时保存命令缓冲副本，处理开始时和解析出错时与内存比对 |
+| `tests/` | `test_runtime.c` 补了 macOS 没有的 `pthread_barrier`；GPU 测试桩改用 `__thread`；两个 Python 测试把临时目录解析成真实路径；`test_probe.py` 检查 SDL 视频子系统在主线程上启动；`test_hle_thread.cpp`、`test_submission_gate.cpp` |
 
 ## 5. 已经踩过的坑（关键事实）
 
@@ -137,6 +155,34 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
 9. CI 的 Intel 机器之所以还能装到 Intel 预编译包，是因为它的 Homebrew 用的是镜像里缓存的旧版本信息。
    镜像一更新，Dependencies 步骤就会开始从源码编，会变慢，到时考虑缓存 `/usr/local/Cellar`。
    `macos-15-intel` 镜像 2027 年 8 月下线。
+10. SDL3 的 Cocoa 驱动只在进程主线程上初始化视频子系统（`SDL_cocoavideo.m` 检查 `[NSThread isMainThread]`），
+    在其他线程上会报 `No available video device`。AppKit 的窗口和事件也只能在主线程上处理。处理方法见第 4 节
+    `src/probe.c`（真机）和 `gpu/shim/bbgpu.cpp` 两行。测试：`test_probe.py` 的 `test_sdl_video_starts_on_the_main_thread`。
+11. AvPlayer 的线程对象会被几个线程同时 join：游戏的 `sceAvPlayerStop`、解复用线程在文件结尾的收尾流程，
+    以及解码线程结束自己的对象。没有同步时，第二次 join 在 macOS 上要么返回 EINVAL（异常导致进程退出），
+    要么等待一个已经被系统分配给新线程的句柄，永远不返回（影片播完时游戏卡住）。测试：`hle-thread-test`。
+12. 提交节流：`sceGnmSubmitDone` 在 GPU 还有工作时设置提交锁，GPU 空闲中断清除它，下一次提交前等待它被清除。
+    GPU 线程每一轮结束都会发空闲信号，包括排空绘制管线期间又有新提交的情况。旧代码收到这种信号也会解除节流，
+    游戏于是提前复用 GPU 线程还没读的命令缓冲。`BB_PM4_CHECK=1` 实测：未修复时 GPU 线程落后 31 到 35 个提交，
+    命令缓冲在开始处理时已被改写；修复后为 0 次。症状是菜单里的 `packet length exceeds remaining submission size`
+    和角色创建界面的 `Unimplemented PM4 type 0`（游戏退出）。只在 GPU 命令线程几乎没有空闲时出现
+    （不锁帧时空闲 0.4%，30 帧时 18% 到 68%）。测试：`submission-gate-test`。
+13. 帧率补丁（`60 FPS++`、`Uncap FPS++`）打开时，角色创建界面不显示角色模型：游戏不发出那部分绘制，
+    帧统计里每帧一直是 201 次；`BB_FPS=30`（不打补丁）时会升到约 270 次，模型正常。进入游戏后各种设置下模型都正常。
+    这是补丁本身的行为，和 macOS 无关，Linux 的默认设置（`uncap`）应该也一样，还没在 Linux 上确认。
+14. 游戏版本：CUSA03023（亚洲版 The Old Hunters Edition）的 1.09 eboot 和 CUSA03173 是同一个构建
+    （镜像大小、导入和重定位数量与开发日志的记录完全一致，sha256 `d65f0b4f...29f9`），可以直接使用。
+    如果手里是 PKG：`param.sfo` 在 PKG 的条目表里（条目 0x1000，未加密），要单独取出放到 `sce_sys/`；
+    用 LibOrbisPkg 0.2 的 `PkgTool.Core` 解包时，要用自带 .NET Core 3 运行时的 `PkgTool.Core-osx-x64`。
+    在 .NET 6 及以上的运行时里，它的 `PFSCReader` 对每个 64 KiB 压缩块只调用一次 `DeflateStream.Read`，
+    只拿到一部分数据，其余为 0：实测 26,913 个 DCX 文件里有 17,226 个损坏。损坏时游戏启动后进入空转，
+    日志里有 `Error: shaderBinarySize ... is not equal to Program size ...`。解包后应检查所有 DCX 都能完整解压。
+15. 看门狗转储：macOS 上 SIGUSR2 会让正在 `pthread_cond_wait` 里等待的线程提前返回（Linux 上 futex 等待会自动重启），
+    游戏的工作线程随后执行无效任务并在 `0x53b3260` 处故障，转储因此中断，退出码 138。
+16. KosmicKrisp 没有启用 Mesa 的磁盘着色器缓存。新管线首次编译最长约 2 秒，新区域会卡顿。bbport 把用过的管线
+    存在 `user/cache`，下次启动时在标题画面之前重新编译（约 700 个管线多用约 15 秒）。
+17. FSR 3.1 在 KosmicKrisp 上创建上下文失败（`Upscaler: FSR 3 context creation failed`），之后本次运行不再使用
+    超分辨率，原因还没查。TAA 路径不创建 FSR 3 上下文，还没在 Mac 上测过。
 
 ## 6. 第一次真机运行：预期日志和最可能出问题的地方
 
@@ -161,9 +207,30 @@ Mapped ... bytes, ... segments; applied ... relocations
 6. 音频（SDL3 → CoreAudio）、手柄（SDL3）、菜单（Cmd+,）。
 7. 性能：游戏代码由 Rosetta 即时翻译（macOS 15 起 Rosetta 支持 AVX/AVX2）。FSR 4 不可用，会退回 FSR 3.1，也可以用 TAA。
 
+### 6.1 实测结果（2026-10-06 至 10-07，M5 Pro，macOS 27.2）
+
+- `bin/bb-probe --vulkan-only`：`Vulkan: Apple M5 Pro; command submission + 4096-byte readback PASS`。
+  驱动报告 KosmicKrisp 26.2.99，Vulkan 1.4.363。
+- 上面的预期日志全部出现，`Thread pointer loads: 17127 read gs:[0x850]`，`Mapped 93538364 bytes, 6 segments; applied 237298 relocations`。
+- 第 1 至 5 条担心的问题都没有出现。出现过的问题见第 5 节第 10 至 17 条，都已处理或记录。
+- 窗口按显示器大小建成 1728x971（Retina），vblank 跟随显示器 120 Hz（`VideoOut: vblank 480 Hz, frame limit 120 FPS`）。
+- 音频走 CoreAudio，DualSense 由 SDL 识别，输入名字的对话框可以直接用键盘输入。
+- 驱动缺少的可选扩展和格式（`D16UnormS8Uint` 不能做深度模板附件、`R5G5B5A1` 完全不支持等）只有警告，
+  暂时没有看到对应的画面问题。
+- 帧统计（`BB_FRAME_STATS=1`）：标题画面 120 FPS；角色创建界面不锁帧约 93 FPS（GPU 命令线程空闲 0.2%）、
+  60 帧时空闲约 75%；第一个区域 30 帧时 GPU 命令线程空闲 18% 到 68%；过场动画（每帧约 1,400 次绘制）约 25 FPS。
+
 ## 7. 调试手段
 
-- `BB_TIMEOUT=60`：60 秒后看门狗打印所有线程（判断是不是卡死）。
+- `BB_TIMEOUT=60`：60 秒后看门狗打印所有线程（判断是不是卡死）。macOS 上转储可能中断，见第 5 节第 15 条。
+- `sample <pid> 3 -file out.txt`：采样正在运行的游戏 3 秒，得到所有线程的调用栈，包括游戏代码地址
+  （游戏镜像从 `0x800000000` 开始），不需要开发者模式。卡住、空转时首选这个。
+- `BB_FRAME_STATS=1`：每 5 秒打印帧率、最慢一帧、着色器编译次数和耗时、GPU 命令线程空闲比例。
+- `BB_PM4_CHECK=1`：报告提交之后被改写的命令缓冲和无法解析的命令包（第 5 节第 12 条）。
+- `BB_PAD_FILE=<文件>`：把按键名（`cross`、`down` 等）写进文件就按下，清空就松开，可以脚本化操作菜单。
+  设置菜单打开时注入的按键会被忽略。
+- 游戏里的错误路径可以用外部补丁临时写入 `ud2`：在 `BB_PATCHES_DIR` 指向的目录里放一个 `isEnabled="true"` 的
+  shadPS4 格式 XML，地址等于游戏偏移加 `0x400000`。执行到那里时故障处理会打印调用链。
 - 出故障时日志最后会有 `Guest fault ... at guest offset 0x...` 或 `Host fault ... in <库>+0x...`，后面跟宿主调用栈。
 - `VK_LOADER_DEBUG=error,warn,driver`：看驱动有没有找到、有没有加载成功。
 - 不经过 run.sh 直接运行（先完整跑一次 run.sh，让它生成 `out/` 里的文件）：
@@ -173,7 +240,8 @@ Mapped ... bytes, ... segments; applied ... relocations
   ```
   run.sh 还会设置 `BB_CONFIG`、`BB_VBLANK_HZ` 等环境变量，需要时照抄。
 - lldb（Rosetta 进程也能调）：先执行 `process handle -p true -s false -n false SIGSEGV SIGBUS SIGUSR2 SIGALRM`，
-  再 `run`。页跟踪本身就靠 SIGSEGV/SIGBUS 工作，不放行的话会一直停在这些信号上。
+  再 `run`。页跟踪本身就靠 SIGSEGV/SIGBUS 工作，不放行的话会一直停在这些信号上。本机没有开启开发者模式，
+  附加进程时会弹出授权对话框，需要先由用户执行 `sudo DevToolsSecurity -enable`。
 - 其他开关见 README（`BB_DMEM_MB`、`BB_TOGGLE_FILE`、`BB_AUDIO_TRACE` 等）。
 
 ## 8. 改代码的规矩
@@ -188,10 +256,15 @@ Mapped ... bytes, ... segments; applied ... relocations
 
 ## 9. 没做完的事
 
-1. **在 M5 Pro / macOS 27 上第一次真正跑游戏**（主任务），用户会提供 `bbport-macos.log` 和 `--vulkan-only` 的输出。
-2. Xcode/CLT 27 工具链还没验证过。
-3. GTK 启动器没移植（Mac 上用 `bbport.ini` 和游戏内菜单）。FSR 4 不可用。
-4. 可以考虑自己从 Mesa 编 x86_64 KosmicKrisp（shadPS4 用的是 `shadexternals/mesa-kosmickrisp`），不再借 shadPS4 的二进制。
-5. 长期：Rosetta 在 macOS 28 之后只保留部分功能，Homebrew 2027 年 9 月移除 Intel 支持，
+1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`），然后再考虑合并。
+2. FSR 3.1 在 KosmicKrisp 上创建上下文失败（第 5 节第 17 条）；顺便测 TAA。
+3. 帧率补丁下角色创建界面不显示模型（第 5 节第 13 条）：可以逐步去掉补丁行，找出是哪几行。
+   `60 FPS++` 和 `Uncap FPS++` 有 37 行相同的改动，其中 30 行在 `30 FPS++` 里也有。
+4. 复杂场景性能：GPU 命令线程在 Rosetta 下是瓶颈（第 6.1 节）。
+5. macOS 的默认帧率设置（目前和 Linux 一样是 `uncap`），等第 3 项有结果后再定。
+6. 看门狗转储在 macOS 上中断（第 5 节第 15 条）：可以改用 Mach 的 `thread_get_state` 读取各线程状态，不发信号。
+7. 本地用 Xcode/CLT 27 完整编译还没试过。GTK 启动器没移植（Mac 上用 `bbport.ini` 和游戏内菜单）。FSR 4 不可用。
+8. 可以考虑自己从 Mesa 编译 x86_64 KosmicKrisp（shadPS4 用的是 `shadexternals/mesa-kosmickrisp`），不再借 shadPS4 的二进制。
+9. 长期：Rosetta 在 macOS 28 之后只保留部分功能，Homebrew 2027 年 9 月移除 Intel 支持，
    长远要么做 arm64 原生版（工作量很大），要么像 shadPS4 那样把依赖都并入项目自己编译。
-6. 可以补一个 Linux CI 任务（nix-shell 跑 `build.sh --test` 和 Python 测试），这样改 macOS 时 Linux 的回归也能自动发现。
+10. 可以补一个 Linux CI 任务（在 nix-shell 里运行 `build.sh --test` 和 Python 测试），这样改 macOS 时 Linux 的回归也能自动发现。
