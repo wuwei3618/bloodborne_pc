@@ -4,6 +4,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <bitset>
 #include <cstring>
 #include <vector>
@@ -193,13 +195,40 @@ union Regs {
     void SetDefaults();
 };
 
+// bbport: a set of block indices visited in order a 64-bit word at a time (std::bitset has no
+// portable find-next; libstdc++'s _Find_next is an extension).
+template <u32 N>
+class BlockSet {
+public:
+    void set(u32 i) {
+        words[i / 64] |= u64(1) << (i % 64);
+    }
+    bool test(u32 i) const {
+        return (words[i / 64] >> (i % 64)) & 1;
+    }
+    void reset() {
+        words.fill(0);
+    }
+    template <typename F>
+    void ForEach(F&& f) const {
+        for (u32 w = 0; w < words.size(); ++w) {
+            for (u64 bits = words[w]; bits != 0; bits &= bits - 1) {
+                f(w * 64 + static_cast<u32>(std::countr_zero(bits)));
+            }
+        }
+    }
+
+private:
+    std::array<u64, (N + 63) / 64> words{};
+};
+
 // bbport: register blocks written by a stretch of packets, and their values at its end. The
 // draw-preparation scanner records one per submission so a worker reaches the state at the
 // start of any later submission without replaying the packets in between.
 struct RegDirty {
     static constexpr u32 BlockWords = 32;
     static constexpr u32 NumBlocks = Regs::NumRegs / BlockWords;
-    std::bitset<NumBlocks> blocks;
+    BlockSet<NumBlocks> blocks;
     bool reset = false; ///< ClearState: defaults, then only the blocks marked after it
 
     void Mark(u32 word, u32 count) {

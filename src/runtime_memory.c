@@ -555,7 +555,11 @@ static void guest_space(void) {
     if (tried) return;
     tried=1;
     void *at=mmap((void *)LOW_MIN,USER_MAX-LOW_MIN,PROT_NONE,MAP_PRIVATE|MAP_ANON|MAP_NORESERVE,-1,0);
-    if (at==(void *)LOW_MIN) { space_reserved=1; return; }
+    if (at==(void *)LOW_MIN) {
+        space_reserved=1;
+        printf("Runtime: guest range 0x%" PRIx64 "-0x%" PRIx64 " reserved\n",LOW_MIN,USER_MAX);
+        return;
+    }
     if (at!=MAP_FAILED) munmap(at,USER_MAX-LOW_MIN);
     mach_vm_address_t address=LOW_MIN; mach_vm_size_t size=0; mach_port_t object=MACH_PORT_NULL;
     vm_region_basic_info_data_64_t info; mach_msg_type_number_t count=VM_REGION_BASIC_INFO_COUNT_64;

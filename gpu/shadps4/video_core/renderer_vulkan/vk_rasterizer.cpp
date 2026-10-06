@@ -421,6 +421,7 @@ bool Rasterizer::IsGpuSideThread() const {
     return OnStageA() || DrawPipe::OnStageB();
 }
 
+#ifdef __linux__ // for the userfaultfd page tracking (Linux only)
 bool Rasterizer::IsGpuSideThreadId(u32 tid) const {
     // The userfaultfd thread handles the fault while the faulting thread waits: without locks
     // only if that thread owns the caches. The GPU command thread does not while the draw
@@ -430,6 +431,7 @@ bool Rasterizer::IsGpuSideThreadId(u32 tid) const {
     }
     return tid == liverpool->GetGpuCommandProcessorThreadId();
 }
+#endif
 
 void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size) {
     if (!draw_pipe || !size) {
@@ -550,10 +552,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
     std::array<u16, AmdGpu::RegDirty::NumBlocks> blocks;
     u32 num_blocks = 0;
-    for (size_t block = dirty.blocks._Find_first(); block < dirty.blocks.size();
-         block = dirty.blocks._Find_next(block)) {
-        blocks[num_blocks++] = static_cast<u16>(block);
-    }
+    dirty.blocks.ForEach([&](u32 block) { blocks[num_blocks++] = static_cast<u16>(block); });
     const auto stages =
         pipeline ? pipeline->GetStages() : std::span<const Shader::Info* const>{};
     // Constants: copied here into the ring, the recording thread only binds them.

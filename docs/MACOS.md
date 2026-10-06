@@ -13,7 +13,8 @@ reports (logs, see the end) are what this stage needs.
 
 - A Mac with Apple silicon (M1 or newer) and **macOS 26** or later: KosmicKrisp is built on
   Metal 4. Intel Macs can build the port natively, but KosmicKrisp does not support them.
-- Rosetta 2, the Xcode command line tools, Python 3.
+- Rosetta 2, Python 3, and Xcode 26 or its command line tools (as for shadPS4: the renderer
+  needs `std::jthread` from the C++ library of Xcode 26).
 - The **x86_64 Homebrew** in `/usr/local` (next to an arm64 Homebrew in `/opt/homebrew`, if
   you have one). Libraries for an x86_64 program must be x86_64.
 - The **Vulkan SDK for macOS** from LunarG (1.4.357.0 or newer), which includes KosmicKrisp
