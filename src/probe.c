@@ -21,8 +21,10 @@
 #include <execinfo.h>
 #include <sys/uio.h>
 #ifdef __APPLE__
+#include <limits.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <mach-o/dyld.h>
 #undef round_page /* Mach macros; the loader has its own round_page() */
 #undef trunc_page
 #else
@@ -317,8 +319,28 @@ void runtime_restart(void) {
 #endif
 }
 
+#ifdef __APPLE__
+/* The Vulkan driver must be x86_64 like this process (an x86_64 KosmicKrisp, docs/MACOS.md):
+ * a manifest packaged next to the executable (vulkan/icd.d) is used when the environment names
+ * no driver. */
+static void use_packaged_vulkan_driver(void) {
+    if (getenv("VK_DRIVER_FILES") || getenv("VK_ICD_FILENAMES")) return;
+    char path[PATH_MAX], resolved[PATH_MAX];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) || !realpath(path, resolved)) return;
+    const char *slash = strrchr(resolved, '/');
+    if (!slash || snprintf(path, sizeof(path), "%.*s/vulkan/icd.d", (int)(slash - resolved), resolved) >= (int)sizeof(path))
+        return;
+    struct stat st;
+    if (!stat(path, &st) && S_ISDIR(st.st_mode)) setenv("VK_DRIVER_FILES", path, 1);
+}
+#endif
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
+#ifdef __APPLE__
+    use_packaged_vulkan_driver();
+#endif
 #ifndef _WIN32
 #ifndef __APPLE__
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the

@@ -23,10 +23,6 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
-
 namespace Vulkan {
 
 static const char* const VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
@@ -263,21 +259,7 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
                                   bool enable_crash_diagnostic) {
     LOG_INFO(Render_Vulkan, "Creating vulkan instance");
 
-#if defined(__APPLE__)
-    // bbport: a driver manifest packaged next to the executable (vulkan/icd.d) is used when the
-    // environment names no driver; otherwise the loader searches as usual (Vulkan SDK, Homebrew).
-    static const auto icd_path = [] {
-        char path[PATH_MAX];
-        u32 length = PATH_MAX;
-        _NSGetExecutablePath(path, &length);
-        return std::filesystem::path(path).parent_path() / "vulkan" / "icd.d";
-    }();
-    if (!std::getenv("VK_DRIVER_FILES") && !std::getenv("VK_ICD_FILENAMES") &&
-        std::filesystem::is_directory(icd_path)) {
-        setenv("VK_DRIVER_FILES", icd_path.c_str(), true);
-    }
-#endif
-
+    // bbport: on macOS, bb-probe itself selects a driver packaged next to it (probe.c).
     static vk::detail::DynamicLoader dl;
     VULKAN_HPP_DEFAULT_DISPATCHER.init(
         dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr"));

@@ -1,5 +1,7 @@
-# macOS x86_64 build check (docs/MACOS.md): builds bb-probe and the GPU library on an Intel
-# runner with the Homebrew packages a Mac uses, and runs the tests that need no GPU or game.
+# macOS x86_64 builds (docs/MACOS.md): bb-probe and the GPU library with the Homebrew packages a
+# Mac uses, and the tests that need no GPU or game. On an Intel Mac everything is native; on the
+# Apple silicon runner everything runs as on a user's Mac: x86_64 under Rosetta 2, built by
+# build.sh from the default (arm64) shell against the x86_64 Homebrew in /usr/local.
 name: macOS
 
 on:
@@ -13,33 +15,60 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Intel (x86_64)
+            runner: macos-15-intel
+          - name: Apple silicon (x86_64 under Rosetta 2)
+            runner: macos-26
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # The renderer needs std::jthread in libc++ (Xcode 26, as for shadPS4); macOS 26 itself
-      # is required on Apple silicon anyway (KosmicKrisp).
+      # The renderer needs std::jthread in libc++ (Xcode 26, as for shadPS4).
       - name: Toolchain
         run: |
+          sw_vers
           ls -d /Applications/Xcode*.app
           xcode=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
           if [ -n "$xcode" ]; then sudo xcode-select -s "$xcode"; fi
           xcode-select -p
           c++ --version
+          /bin/bash --version | head -n 1
+
+      # The setup of docs/MACOS.md: Rosetta 2 and a second Homebrew, x86_64, in /usr/local.
+      - name: Rosetta 2, x86_64 Homebrew
+        if: runner.arch == 'ARM64'
+        run: |
+          sudo softwareupdate --install-rosetta --agree-to-license
+          NONINTERACTIVE=1 arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
       - name: Dependencies
         run: >-
-          brew install cmake ninja pkgconf glslang vulkan-headers vulkan-loader sdl3 ffmpeg
-          boost fmt magic_enum robin-map xxhash zydis miniz xbyak
+          arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-headers
+          vulkan-loader sdl3 ffmpeg boost fmt magic_enum robin-map xxhash zydis miniz xbyak
 
+      # From the default shell: on Apple silicon build.sh switches to x86_64 (and bash 3.2) itself.
       - name: Build, runtime tests
         run: BB_LTO=OFF bash build.sh --test
 
+      - name: Architecture
+        run: |
+          file out/bb-probe out/gpu/libbbgpu.dylib
+          echo "x86_64 processes translated by Rosetta 2: $(arch -x86_64 sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)"
+
       - name: GPU library tests
         run: |
+          export PATH="/usr/local/bin:$PATH"
           ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test
           for test in motion-history-test ui-composition-test motion-shader-test; do
             ./out/gpu/$test
@@ -48,10 +77,27 @@ jobs:
       - name: Python tests
         run: python3 -m unittest discover -s tests
 
+      # Vulkan without the game (bb-probe --vulkan-only) through the x86_64 KosmicKrisp of
+      # shadPS4's macOS release, installed as docs/MACOS.md says. The runner's virtual GPU may
+      # not support KosmicKrisp: informative only.
+      - name: Vulkan through KosmicKrisp (informative)
+        if: runner.arch == 'ARM64'
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          system_profiler SPDisplaysDataType | head -n 12
+          curl -fsSL -o shadps4.zip https://github.com/shadps4-emu/shadPS4/releases/download/v.0.19.0/shadps4-macos-sdl-0.19.0.zip
+          echo "47676b4875343b69f49689c7668d71de79ecaaa17ffeab3415d4137800b7ee02  shadps4.zip" | shasum -a 256 -c
+          mkdir -p out/vulkan/icd.d
+          unzip -o -j shadps4.zip kosmickrisp_mesa_icd.json libvulkan_kosmickrisp.dylib -d out/vulkan/icd.d
+          file out/vulkan/icd.d/libvulkan_kosmickrisp.dylib
+          VK_LOADER_DEBUG=error,warn,driver out/bb-probe --vulkan-only
+
       # All compile errors at once (build.sh stops at the first failing objects).
       - name: GPU library errors
         if: failure()
         run: |
+          export PATH="/usr/local/bin:$PATH"
           ninja -C out/gpu -k 0 bbgpu > out/gpu-all.log 2>&1 || true
           grep -E 'error:' out/gpu-all.log | sort | uniq -c | sort -rn | head -n 150 || true
           tail -n 60 out/gpu-all.log

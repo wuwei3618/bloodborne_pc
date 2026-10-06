@@ -2,26 +2,31 @@
 
 bbport runs the game's original x86-64 code in its own process, so on a Mac the whole program
 is an x86_64 build: native on Intel, translated by Rosetta 2 on Apple silicon. Rendering goes
-through Vulkan on Metal with LunarG's **KosmicKrisp** driver (the one shadPS4's macOS build
-uses).
+through Vulkan on Metal with Mesa's **KosmicKrisp** driver, in the x86_64 build that shadPS4's
+macOS release ships. The KosmicKrisp of LunarG's Vulkan SDK and of Homebrew is arm64-only, and
+an x86_64 process cannot load it.
 
-**Status:** a GitHub Actions job (`.github/workflows/macos.yml`, Intel runner) builds the port
-on macOS and runs its tests there: the runtime tests (guest TLS, guest memory, locks,
-semaphores, files), the GPU library tests that need no GPU, and the Python tests, which also
-start `bb-probe` on small synthetic x86-64 images. The game itself has **not been run on a Mac
-yet** — reports (logs, see the end) are what this stage needs.
+**Status:** GitHub Actions (`.github/workflows/macos.yml`) builds the port and runs its tests on
+an Intel Mac and on an Apple silicon Mac, where everything runs as described below (x86_64
+under Rosetta 2): the runtime tests (guest TLS, guest memory, locks, semaphores, files), the
+GPU library tests that need no GPU, and the Python tests, which also start `bb-probe` on small
+synthetic x86-64 images. The game itself has **not been run on a Mac yet** — reports (logs, see
+the end) are what this stage needs.
 
 ## Requirements
 
 - A Mac with Apple silicon (M1 or newer) and **macOS 26** or later: KosmicKrisp is built on
   Metal 4. Intel Macs can build the port natively, but KosmicKrisp does not support them.
-- Rosetta 2, and Xcode 26 or its command line tools (as for shadPS4: the renderer needs
-  `std::jthread` from the C++ library of Xcode 26). Their `python3` (3.9) runs the
+  Rosetta 2 runs any x86_64 program through macOS 27; Apple keeps only a subset of it, for
+  older games, from macOS 28 on.
+- Rosetta 2, and Xcode 26 or later or its command line tools (as for shadPS4: the renderer
+  needs `std::jthread` from the C++ library of Xcode 26). Their `python3` (3.9) runs the
   preparation scripts.
 - The **x86_64 Homebrew** in `/usr/local` (next to an arm64 Homebrew in `/opt/homebrew`, if
   you have one). Libraries for an x86_64 program must be x86_64.
-- The **Vulkan SDK for macOS** from LunarG (1.4.357.0 or newer), which includes KosmicKrisp
-  as a universal (x86_64 + arm64) driver.
+- An **x86_64 KosmicKrisp**: the two driver files of shadPS4's macOS release (below), or a
+  build of Mesa's KosmicKrisp for x86_64 (shadPS4 builds it with
+  [shadexternals/mesa-kosmickrisp](https://github.com/shadexternals/mesa-kosmickrisp)).
 - Your dump of Bloodborne CUSA03173, version 1.09.
 
 ## Setup
@@ -36,26 +41,26 @@ arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-head
     sdl3 ffmpeg boost fmt magic_enum robin-map xxhash zydis miniz xbyak
 ```
 
-Install the Vulkan SDK with LunarG's installer into its default place (`~/VulkanSDK/<version>`);
-a system-wide install would overwrite Homebrew's Vulkan files in `/usr/local`. Check that the
-driver has an x86_64 slice:
-
-```bash
-lipo -info ~/VulkanSDK/*/macOS/lib/libvulkan_kosmickrisp.dylib
-```
-
 ## Build and run
 
 ```bash
 git clone --recursive https://github.com/wuwei3618/bloodborne_pc bbport && cd bbport
 git checkout macos-port
 bash build.sh                          # switches to x86_64 itself on Apple silicon
+
+# The x86_64 KosmicKrisp of shadPS4's macOS release, next to bb-probe
+curl -LO https://github.com/shadps4-emu/shadPS4/releases/download/v.0.19.0/shadps4-macos-sdl-0.19.0.zip
+mkdir -p out/vulkan/icd.d
+unzip -j shadps4-macos-sdl-0.19.0.zip kosmickrisp_mesa_icd.json libvulkan_kosmickrisp.dylib -d out/vulkan/icd.d
+out/bb-probe --vulkan-only             # Vulkan without the game: device name and PASS
+
 BB_GAME_DIR=/path/to/CUSA03173 bash run.sh 2>&1 | tee bbport-macos.log
 ```
 
-`run.sh` uses the SDK's KosmicKrisp driver (`~/VulkanSDK/*/macOS/share/vulkan/icd.d`) unless
-`VK_DRIVER_FILES` names a driver manifest. Settings are in `bbport.ini` (the GTK launcher is not
-ported). The in-game menu opens with **Cmd+,** (or L3+R3 on a gamepad).
+`bb-probe` uses the driver in `out/vulkan/icd.d` unless `VK_DRIVER_FILES` names a driver
+manifest. A browser download is quarantined, a `curl` download is not; after a browser download
+run `xattr -dr com.apple.quarantine out/vulkan`. Settings are in `bbport.ini` (the GTK launcher
+is not ported). The in-game menu opens with **Cmd+,** (or L3+R3 on a gamepad).
 
 ## Differences from Linux
 
@@ -72,7 +77,7 @@ ported). The in-game menu opens with **Cmd+,** (or L3+R3 on a gamepad).
 Send `bbport-macos.log` and the output of
 
 ```bash
-arch -x86_64 ~/VulkanSDK/*/macOS/bin/vulkaninfo --summary
+out/bb-probe --vulkan-only
 sysctl -n machdep.cpu.brand_string; sw_vers
 ```
 
