@@ -1,7 +1,7 @@
-# macOS x86_64 builds (docs/MACOS.md): bb-probe and the GPU library with the Homebrew packages a
-# Mac uses, and the tests that need no GPU or game. On an Intel Mac everything is native; on the
-# Apple silicon runner everything runs as on a user's Mac: x86_64 under Rosetta 2, built by
-# build.sh from the default (arm64) shell against the x86_64 Homebrew in /usr/local.
+# macOS x86_64 (docs/MACOS.md). An Intel Mac builds bb-probe and the GPU library with the
+# x86_64 Homebrew, runs the tests that need no GPU or game, and packages the build with the
+# libraries it uses (artifact bbport-macos-x86_64). An Apple silicon Mac without that Homebrew
+# then runs the packaged programs and tests as a user's Mac does: x86_64 under Rosetta 2.
 name: macOS
 
 on:
@@ -14,17 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Intel (x86_64)
-            runner: macos-15-intel
-          - name: Apple silicon (x86_64 under Rosetta 2)
-            runner: macos-26
-    runs-on: ${{ matrix.runner }}
+  intel:
+    name: Intel (x86_64)
+    runs-on: macos-15-intel
     timeout-minutes: 90
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
@@ -43,32 +35,17 @@ jobs:
           if [ -n "$xcode" ]; then sudo xcode-select -s "$xcode"; fi
           xcode-select -p
           c++ --version
-          /bin/bash --version | head -n 1
-
-      # The setup of docs/MACOS.md: Rosetta 2 and a second Homebrew, x86_64, in /usr/local.
-      - name: Rosetta 2, x86_64 Homebrew
-        if: runner.arch == 'ARM64'
-        run: |
-          sudo softwareupdate --install-rosetta --agree-to-license
-          bash tools/macos_homebrew_x86_64.sh
 
       - name: Dependencies
         run: >-
-          arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-headers
-          vulkan-loader sdl3 ffmpeg boost fmt magic_enum robin-map xxhash zydis miniz xbyak
+          brew install cmake ninja pkgconf glslang vulkan-headers vulkan-loader sdl3 ffmpeg
+          boost fmt magic_enum robin-map xxhash zydis miniz xbyak
 
-      # From the default shell: on Apple silicon build.sh switches to x86_64 (and bash 3.2) itself.
       - name: Build, runtime tests
         run: BB_LTO=OFF bash build.sh --test
 
-      - name: Architecture
-        run: |
-          file out/bb-probe out/gpu/libbbgpu.dylib
-          echo "x86_64 processes translated by Rosetta 2: $(arch -x86_64 sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)"
-
       - name: GPU library tests
         run: |
-          export PATH="/usr/local/bin:$PATH"
           ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test
           for test in motion-history-test ui-composition-test motion-shader-test; do
             ./out/gpu/$test
@@ -77,27 +54,88 @@ jobs:
       - name: Python tests
         run: python3 -m unittest discover -s tests
 
-      # Vulkan without the game (bb-probe --vulkan-only) through the x86_64 KosmicKrisp of
-      # shadPS4's macOS release, installed as docs/MACOS.md says. The runner's virtual GPU may
-      # not support KosmicKrisp: informative only.
-      - name: Vulkan through KosmicKrisp (informative)
-        if: runner.arch == 'ARM64'
-        continue-on-error: true
-        timeout-minutes: 10
-        run: |
-          system_profiler SPDisplaysDataType | head -n 12
-          curl -fsSL -o shadps4.zip https://github.com/shadps4-emu/shadPS4/releases/download/v.0.19.0/shadps4-macos-sdl-0.19.0.zip
-          echo "47676b4875343b69f49689c7668d71de79ecaaa17ffeab3415d4137800b7ee02  shadps4.zip" | shasum -a 256 -c
-          mkdir -p out/vulkan/icd.d
-          unzip -o -j shadps4.zip kosmickrisp_mesa_icd.json libvulkan_kosmickrisp.dylib -d out/vulkan/icd.d
-          file out/vulkan/icd.d/libvulkan_kosmickrisp.dylib
-          VK_LOADER_DEBUG=error,warn,driver out/bb-probe --vulkan-only
+      - name: Package
+        run: bash packaging/macos_package.sh --tests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bbport-macos-x86_64
+          path: dist/bbport-macos-x86_64.tar.gz
+          compression-level: 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64-tests
+          path: dist/macos-x86_64-tests.tar.gz
+          compression-level: 0
+          retention-days: 7
 
       # All compile errors at once (build.sh stops at the first failing objects).
       - name: GPU library errors
         if: failure() && hashFiles('out/gpu/build.ninja') != ''
         run: |
-          export PATH="/usr/local/bin:$PATH"
           ninja -C out/gpu -k 0 bbgpu > out/gpu-all.log 2>&1 || true
           grep -E 'error:' out/gpu-all.log | sort | uniq -c | sort -rn | head -n 150 || true
           tail -n 60 out/gpu-all.log
+
+  apple-silicon:
+    name: Apple silicon (x86_64 under Rosetta 2)
+    needs: intel
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Rosetta 2
+        run: |
+          sw_vers
+          sudo softwareupdate --install-rosetta --agree-to-license
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Unpack
+        run: |
+          tar -xzf dist/macos-x86_64-tests.tar.gz
+          tar -C dist -xzf dist/bbport-macos-x86_64.tar.gz
+          file out/bb-probe dist/bbport-macos-x86_64/bin/lib/* | sed 's/:.*Mach-O/: Mach-O/'
+          echo "x86_64 processes translated by Rosetta 2: $(arch -x86_64 sysctl -n sysctl.proc_translated)"
+
+      # As build.sh --test, translated by Rosetta 2 (also puts the libraries in its cache).
+      - name: Runtime tests
+        run: |
+          for test in pad-test runtime-test file-mods-test sema-test content-test; do
+            ./out/$test
+          done
+
+      - name: GPU library tests
+        run: |
+          for test in motion-history-test ui-composition-test motion-shader-test; do
+            ./out/gpu/$test
+          done
+
+      - name: Python tests
+        run: python3 -m unittest discover -s tests
+
+      # The package as a user unpacks it: bb-probe starts (its usage, exit status 1) with only
+      # the libraries it carries.
+      - name: Package
+        run: |
+          cd dist/bbport-macos-x86_64
+          status=0; bin/bb-probe > usage.txt 2>&1 || status=$?
+          cat usage.txt
+          test "$status" = 1 && grep -q Usage usage.txt
+
+      # Vulkan without the game through the package's KosmicKrisp. The runner's virtual GPU may
+      # not support it: informative only.
+      - name: Vulkan through KosmicKrisp (informative)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          system_profiler SPDisplaysDataType | head -n 12
+          cd dist/bbport-macos-x86_64
+          VK_LOADER_DEBUG=error,warn,driver bin/bb-probe --vulkan-only

@@ -70,6 +70,8 @@ nopie=(-no-pie)
 if [[ -n $macos ]]; then
     gpu=(-Lout/gpu -lbbgpu -Wl,-rpath,@loader_path/gpu -Wl,-rpath,"$PWD/out/gpu" -Wl,-export_dynamic)
     nopie=()
+    # Room for the relative library paths of the prebuilt package (packaging/macos_bundle.py).
+    libraries+=(-Wl,-headerpad_max_install_names)
 fi
 runtime=(src/runtime*.c)
 # Third-party decoders: compiled once, without this project's -Werror policy.
