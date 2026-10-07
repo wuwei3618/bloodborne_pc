@@ -4,9 +4,9 @@
 从 2026-10-06 起，真机测试和修改由 Mac 本地会话负责。用户的 Mac：M5 Pro，macOS 27.2。
 
 现状（2026-10-07）：游戏已经在这台 Mac 上运行起来。用 CI 的预编译包可以启动游戏、播放影片、创建角色、
-进入第一个区域，DualSense 手柄和 FSR 3.1 都可用。菜单 60 到 120 FPS，第一个区域约 25 到 40 FPS；游戏场景里
+进入第一个区域，DualSense 手柄和 FSR 3.1 都可用，游戏内菜单有中文。菜单 60 到 120 FPS，第一个区域约 25 到 40 FPS；游戏场景里
 GPU 命令线程约三分之二的时间在等 GPU 执行完已提交的工作（第 5 节第 21 条）。真机测试中发现的问题和处理结果见
-第 5 节第 10 至 21 条和第 6.1 节，没做完的事见第 9 节。
+第 5 节第 10 至 23 条和第 6.1 节，没做完的事见第 9 节。
 
 ## 0. 开工清单
 
@@ -21,8 +21,8 @@ GPU 命令线程约三分之二的时间在等 GPU 执行完已提交的工作�
 
 - 提交：从 `0c62f20` 起（`git log 5224a6d..macos-port`），全部在 `macos-port`，未合并到 main。
   真机测试期间的提交：`1c23636`（窗口放到主线程）、`8d2768f`（影片停止时的线程等待）、
-  `7fb005a`（`BB_PM4_CHECK` 诊断）、`d9ae010`（提交节流的空闲信号），以及 FSR 3 显存类型的修复
-  （第 5 节第 17 条）。
+  `7fb005a`（`BB_PM4_CHECK` 诊断）、`d9ae010`（提交节流的空闲信号）、`78fd0e3`（FSR 3 显存类型，
+  第 5 节第 17 条）、`fb69ff4`（运动矢量着色器进入管线缓存，第 5 节第 20 条）、`c4d1ccb`（中文菜单）。
 - CI：`.github/workflows/macos.yml`，每次推送跑两个任务（约 15 分钟）：
   - **Intel (x86_64)**（`macos-15-intel`）：x86_64 Homebrew 装依赖 → `build.sh --test` → GPU 库测试 →
     Python 测试 → `packaging/macos_package.sh --tests` → 上传产物 `bbport-macos-x86_64`（用户包，
@@ -30,12 +30,13 @@ GPU 命令线程约三分之二的时间在等 GPU 执行完已提交的工作�
   - **Apple silicon (x86_64 under Rosetta 2)**（`macos-26`，机器上**没有**任何 x86_64 库）：下载两个
     产物，在 Rosetta 下跑运行时 / GPU 库 / Python 测试，启动包里的 `bin/bb-probe`，再用包里的
     KosmicKrisp 跑 `--vulkan-only`（虚拟机没有能用的 GPU，预期返回 -3；真机应打印 GPU 名和 PASS）。
-- 最新绿色构建：第 18 轮，https://github.com/wuwei3618/bloodborne_pc/actions/runs/37550796029
+- 最新绿色构建：第 22 轮，https://github.com/wuwei3618/bloodborne_pc/actions/runs/37565699940
 - Linux：到 `c9df91f` 为止，所有 macOS 代码都在 `__APPLE__` 分支或 `src/platform.h` 里，每轮改动都在 Linux
   （nix-shell）上运行过 `build.sh --test` 和 82 项 Python 测试。`8d2768f`、`7fb005a`、`d9ae010` 改的是
   Linux 和 macOS 共用的代码（`gpu/shim/core/libraries/kernel/threads.h`、`liverpool.cpp`、`gnmdriver.cpp`），
   还没在 Linux 上验证，合并前要补做。FSR 3 显存类型的补丁（`gpu/patches/fsr-vulkan/0002`）在 Linux 上也生效，
   只在设备没有“只在设备本地”的显存类型时改变选择；新测试 `fsr3-memory-type-test` 也要在 Linux 上编译运行一次。
+  `fb69ff4`（着色器生成、管线创建、缓存序列化、预热时机、sirit）和 `c4d1ccb`（菜单、设置）改的也是共用代码。
   仓库没有 Linux CI。
 
 ## 2. 用户的环境与限制
@@ -220,12 +221,19 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
     107 个，之后又有 29 个；4K 加 Performance 约 170 个），所以每种新设置第一次玩时卡顿更多，以后启动时会预热。
     启动时报告的“过期”管线（`93 stale pipelines were found`）几乎都是带物体运动矢量的顶点着色器：bbport 生成的这类
     着色器把两个缓冲区的设备地址（`MotionVectors::params_address`、`positions_address`）作为常量写进 SPIR-V，地址每次
-    运行都不同，所以 `LoadShaderMeta` 按设计跳过它们，第一次用到时在运行时重新编译。按 `vk_pipeline_serialization.cpp`
+    运行都不同，所以原来 `LoadShaderMeta` 按设计跳过它们，第一次用到时在运行时重新编译。按 `vk_pipeline_serialization.cpp`
     的格式解析缓存：那次启动时的 516 个管线里有 92 个属于这一类，另 1 个是日志里的索引冲突；今天的几次运行中，之前就在
-    缓存里的这类管线有 67 个被重新编译并写回，其余 424 个普通管线一个都没有重新编译。现在的缓存里这一类有 165 个
+    缓存里的这类管线有 67 个被重新编译并写回，其余 424 个普通管线一个都没有重新编译。修复前的缓存里这一类有 165 个
     （共 637 个，涉及 71 个顶点着色器）。缓存文件的布局（x86_64）：元数据文件是两个 u32 版本号、u64 `perm_hash`、
     u64 `perm_idx`、12 字节 `Bindings`、280 字节 `RuntimeInfo`，着色器阶段在文件偏移 40（顶点着色器为 1），
     `motion_vectors` 在偏移 124；管线键文件是 u32 版本、u32 是否计算管线，图形管线的 6 个阶段哈希从偏移 8 开始。
+    处理（`fb69ff4`）：两个地址改成 64 位特化常量（`SpecId` 0 和 1，sirit 新增 `SpecConstant`）。创建图形管线时，
+    只要本次运行启用了物体运动，就给顶点阶段传入本次运行的地址；预热出来的管线不带各阶段的运行时信息，所以不按着色器
+    判断，统一传入，Vulkan 会忽略着色器里没有的常量。缓存里这类条目在二进制版本号上加标志位 `0x80000000`：旧条目被
+    拒绝，其他条目不受影响；没有启用物体运动的运行不读入这类条目。预热从 `PipelineCache` 的构造函数挪到光栅化器创建
+    物体运动缓冲区之后，原来预热时地址还是 0。测试：`motion-shader-test`。实测：第一次运行把遇到的旧条目重新编译成
+    新格式，第二次启动时“过期”管线从 166 个降到 6 个（5 个还没遇到的旧条目和 1 个索引冲突）。另用独立的小程序验证过，
+    KosmicKrisp 在计算管线和顶点管线里都能正确使用 64 位特化常量作为缓冲区设备地址。
 21. 性能瓶颈的更正：之前认为游戏场景的瓶颈是 Rosetta 下 GPU 命令线程自身的工作，这个判断不对。帧统计里
     `blocked: ... GPU ticks` 是这个线程在 `Scheduler::Wait`（`vk_scheduler.cpp`）里等时间线信号量的时间占比，
     也就是等 GPU 执行完已提交工作的时间。游戏场景里各负载段的中位数：60 帧那一轮（没有 FSR 3）62% 到 68%，
@@ -234,6 +242,16 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
     提高渲染分辨率会让帧率下降（第 6.1 节），说明等待时间和 GPU 的工作量有关。还不清楚 GPU 本身是否满负荷：
     游戏运行时可以用 `ioreg -r -d 1 -w 0 -c IOAccelerator` 读 `Device Utilization %`（不需要 sudo，约每秒更新）。
     利用率不高，说明时间主要花在提交和等待的往返上；接近 100%，说明是 GPU 执行本身慢。
+22. 物体运动矢量在 Mac 上不起作用：打开菜单里的“显示运动矢量（调试）”，移动的角色身上没有蓝色（蓝色表示像素拿到了
+    物体自己的运动矢量），改动前（`8c6f1e9`）和改动后（`fb69ff4`）的包都一样。所以 FSR 在 Mac 上只有镜头的运动矢量，
+    移动的角色会留下拖影。原因还没查。已排除的：KosmicKrisp 能在顶点着色器里通过缓冲区设备地址写入（独立小程序验证）。
+    下一步：用 `BB_MOTION_SELECT_LOG=1` 看哪些绘制选用了运动变体，用 `BB_OBJECT_MOTION_ALL=1` 让所有绘制都用运动变体，
+    再查片段着色器的运动输出和合成。查清之前，设置 `object_motion=0` 可以省下这部分 GPU 工作，画面和现在一样。
+23. 标题画面准备播放闲置影片时偶发设备丢失：2026-10-07 有一次运行在标题画面闲置约 100 秒后出错，日志为
+    `vk_scheduler.cpp:437 SubmitExecution: Assertion Failed! Device lost during submit`，进程退出码 23。同一时刻系统日志
+    里先有内核 `AGXG17X` 的一条事件信号消息，接着是 `bb-probe ... (IOGPU) IOGPUMetalError: <private>`，错误内容被系统
+    隐去，看不出是无效地址还是执行超时。下一次运行同样闲置，约 100 秒时只有一次 63 毫秒的卡顿，约 145 秒影片正常开始。
+    复现时可以加 `MTL_SHADER_VALIDATION=1`，Metal 会报出越界访问的着色器和地址。
 
 ## 6. 第一次真机运行：预期日志和最可能出问题的地方
 
@@ -286,6 +304,10 @@ Mapped ... bytes, ... segments; applied ... relocations
 
   用户的感觉：4K 加 Quality 比 1080p 清楚一点，但动作变慢（第 5 节第 19 条）；4K 加 Performance 比 1080p 清楚一些，
   速度正常。在 Retina 屏上看重清晰度可以用 `output_res=3840x2160` 和 `preset=3`。
+- 在启动时固定了场景尺寸的会话里（输出不是 1080p 时的默认方式），菜单里选 TAA 并不会运行 TAA：日志打印
+  `TAA: remove BB_RENDER_RES to use native-resolution TAA`，超分辨率这一步被跳过，约 1080p 的场景直接拉伸到输出
+  尺寸。用户感觉帧率明显提高，省下的是 FSR 3 放大到 4K 的开销。重启后 TAA 会按输出分辨率渲染整个场景，4K 下负担
+  更大。TAA 本身在 Mac 上仍未测过。
 
 ## 7. 调试手段
 
@@ -296,6 +318,10 @@ Mapped ... bytes, ... segments; applied ... relocations
   比例（`GPU ticks`），以及帧间隔的中位数、标准差和 p99。
 - GPU 利用率：`ioreg -r -d 1 -w 0 -c IOAccelerator | grep -o '"Device Utilization %"=[0-9]*'`，约每秒更新一次，
   不需要 sudo。
+- GPU 出错时查系统日志：`/usr/bin/log show --start "<时间>" --end "<时间>" --predicate 'process == "bb-probe" OR process == "kernel"'`。
+  zsh 的 `log` 是内建命令，要写全路径。Metal 的校验开关：`MTL_DEBUG_LAYER=1`（接口用法）、`MTL_SHADER_VALIDATION=1`
+  （着色器越界访问），开启后会明显变慢。
+- 游戏内菜单的调试选项：“显示运动矢量（调试）”和“显示遮罩（调试）”，可以随时打开查看。
 - `BB_PM4_CHECK=1`：报告提交之后被改写的命令缓冲和无法解析的命令包（第 5 节第 12 条）。
 - 不开游戏检查 FSR 3：在暂存目录里按 x86_64 编译 FSR-Vulkan，
   `cmake -S gpu/third_party/fsr-vulkan -B <目录> -DCMAKE_OSX_ARCHITECTURES=x86_64 -DVulkan_INCLUDE_DIR=/opt/homebrew/include -DVulkan_LIBRARY=<包>/bin/lib/libvulkan.1.dylib -DFFX_VK_PORTABLE_BUILD_FSR4_V07_VULKAN=OFF`，
@@ -332,7 +358,7 @@ Mapped ... bytes, ... segments; applied ... relocations
 
 ## 9. 没做完的事
 
-1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`）和 FSR 3 显存类型的补丁（`78fd0e3`，包括新测试
+1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`、`fb69ff4`、`c4d1ccb`）和 FSR 3 显存类型的补丁（`78fd0e3`，包括新测试
    `fsr3-memory-type-test`），然后再考虑合并。
 2. FSR 3.1：已修复并在游戏里验证（第 5 节第 17 条、第 6.1 节）；还没测 TAA。
 3. 帧率补丁下角色创建界面不显示模型（第 5 节第 13 条）：可以逐步去掉补丁行，找出是哪几行。
@@ -341,16 +367,15 @@ Mapped ... bytes, ... segments; applied ... relocations
    分清是 GPU 执行慢，还是提交和等待的往返多。
 5. 帧率低于 30 时游戏变慢（第 5 节第 19 条）：原因已查清，是原版游戏和帧率补丁共有的 1/30 秒步长上限。如果要放宽
    （例如允许每帧推进 1/20 秒），要改补丁里的常量，可能影响物理和判定，需要维护者决定。
-6. 带运动矢量的管线每次运行都要重新编译（第 5 节第 20 条）：可以把两个缓冲区地址改成特化常量（`OpSpecConstant`），
-   在创建管线时用 `VkSpecializationInfo` 传入本次运行的地址，让这类管线也能缓存和预热。改的是 Linux 和 macOS
-   共用的着色器生成和管线创建代码，`ShaderBinaryVersion` 要加一。
-7. Retina 屏的 Mac 是否默认使用 4K 输出加 Performance（第 6.1 节），需要维护者决定。
-8. 60 帧预设在达不到 60 帧的机器上帧间隔不均匀（第 5 节第 18 条）。可以考虑让 60 帧预设也用 480 Hz 垂直同步，
+6. 物体运动矢量在 Mac 上不起作用（第 5 节第 22 条）。
+7. 标题画面偶发设备丢失（第 5 节第 23 条）：再出现时加 `MTL_SHADER_VALIDATION=1` 复现。
+8. Retina 屏的 Mac 是否默认使用 4K 输出加 Performance（第 6.1 节），需要维护者决定。
+9. 60 帧预设在达不到 60 帧的机器上帧间隔不均匀（第 5 节第 18 条）。可以考虑让 60 帧预设也用 480 Hz 垂直同步，
    由显示线程限制在 60 帧（`BB_VBLANK_HZ=0 BB_FPS_LIMIT=60`）。要先确认 `60 FPS++` 补丁在这种设置下游戏速度正常，
    而且这会同时改变 Linux 的行为。
-9. 看门狗转储在 macOS 上中断（第 5 节第 15 条）：可以改用 Mach 的 `thread_get_state` 读取各线程状态，不发信号。
-10. 本地用 Xcode/CLT 27 完整编译还没试过。GTK 启动器没移植（Mac 上用 `bbport.ini` 和游戏内菜单）。FSR 4 不可用。
-11. 可以考虑自己从 Mesa 编译 x86_64 KosmicKrisp（shadPS4 用的是 `shadexternals/mesa-kosmickrisp`），不再借 shadPS4 的二进制。
-12. 长期：Rosetta 在 macOS 28 之后只保留部分功能，Homebrew 2027 年 9 月移除 Intel 支持，
+10. 看门狗转储在 macOS 上中断（第 5 节第 15 条）：可以改用 Mach 的 `thread_get_state` 读取各线程状态，不发信号。
+11. 本地用 Xcode/CLT 27 完整编译还没试过。GTK 启动器没移植（Mac 上用 `bbport.ini` 和游戏内菜单）。FSR 4 不可用。
+12. 可以考虑自己从 Mesa 编译 x86_64 KosmicKrisp（shadPS4 用的是 `shadexternals/mesa-kosmickrisp`），不再借 shadPS4 的二进制。
+13. 长期：Rosetta 在 macOS 28 之后只保留部分功能，Homebrew 2027 年 9 月移除 Intel 支持，
     长远要么做 arm64 原生版（工作量很大），要么像 shadPS4 那样把依赖都并入项目自己编译。
-13. 可以补一个 Linux CI 任务（在 nix-shell 里运行 `build.sh --test` 和 Python 测试），这样改 macOS 时 Linux 的回归也能自动发现。
+14. 可以补一个 Linux CI 任务（在 nix-shell 里运行 `build.sh --test` 和 Python 测试），这样改 macOS 时 Linux 的回归也能自动发现。

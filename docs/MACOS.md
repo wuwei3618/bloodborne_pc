@@ -92,9 +92,13 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   keeps no disk cache of its own: the port saves the pipelines it used (`user/cache`) and
   compiles them again at the next start, before the title screen (about 15 s for 700). Each new
   render size (another output resolution or preset) needs its own pipelines, so the first run
-  with new settings stutters more. Pipelines whose vertex shader writes the port's object
-  motion vectors (about a quarter of them) contain buffer addresses that are valid for one run
-  only: they are compiled again the first time they are needed in every run.
+  with new settings stutters more.
+- Object motion vectors (the menu's character motion vectors) have no effect on a Mac yet: the
+  motion vector debug view shows no object vectors (no blue) on moving characters, so with
+  FSR 3.1 they can leave trails.
+- Once, the GPU device was lost at the title screen, when the idle movie was about to start
+  (`Device lost during submit`, and an `IOGPUMetalError` in the system log); in the next run
+  the movie started normally.
 - With a frame rate patch (`BB_FPS=60`, or `uncap`, the default) the character creator shows no
   character model; with `BB_FPS=30` (the game's own 30 FPS, no patch) it does. In the game
   itself models are shown with every preset. To see the model while creating a character,
