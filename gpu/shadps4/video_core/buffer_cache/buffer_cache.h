@@ -47,8 +47,6 @@ public:
     /// Read-only bindings up to this size are copied into a stream buffer (bbport: public for
     /// the draw pipeline's constant ring).
     static constexpr u64 STREAM_THRESHOLD = 16_KB;
-    /// bbport: STREAM_THRESHOLD, or BB_STREAM_THRESHOLD (bytes) when that is larger.
-    static u64 StreamThreshold();
 
     explicit BufferCache(const Vulkan::Instance& instance, Vulkan::Scheduler& scheduler,
                          Vulkan::Runtime& runtime, AmdGpu::Liverpool* liverpool,

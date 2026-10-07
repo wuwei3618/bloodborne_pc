@@ -827,11 +827,6 @@ public:
         return !(is_rendering && render_state == state);
     }
 
-    /// Whether a render pass is open.
-    [[nodiscard]] bool IsRendering() const noexcept {
-        return is_rendering;
-    }
-
     /// CommandBuffer() calls that waited for a recording thread (BB_FRAME_STATS).
     static inline std::atomic<u64> direct_recordings{0};
 

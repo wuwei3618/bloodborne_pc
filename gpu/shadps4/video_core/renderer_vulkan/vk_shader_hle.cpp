@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstring>
 #include "shader_recompiler/info.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -136,64 +135,6 @@ static bool MultiCopy(Rasterizer& rasterizer, const VideoCore::Buffer* src,
     return true;
 }
 
-// bbport (BB_COPY_SHADER_CPU=1): copies a batch in guest memory, with no GPU work, when the GPU
-// holds no newer data for its source or destination and no image overlaps either. A GPU copy in
-// a render pass ends the pass, which on a Mac stores and loads its attachments again. The
-// writes to tracked pages fault and mark them CPU-modified, as the guest's own writes do.
-static bool CopyOnCpu(Rasterizer& rasterizer, VAddr src_base, VAddr dst_base, u64 src_min,
-                      u64 src_max, u64 dst_min, u64 dst_max,
-                      std::span<const vk::BufferCopy> copies) {
-    static const bool enabled = [] {
-        const char* env = std::getenv("BB_COPY_SHADER_CPU");
-        return env && env[0] == '1';
-    }();
-#ifdef __APPLE__
-    const bool stats = BbStats::enabled;
-#else
-    constexpr bool stats = false;
-#endif
-    if (!enabled && !stats) {
-        return false;
-    }
-    auto& buffer_cache = rasterizer.GetBufferCache();
-    auto& texture_cache = rasterizer.GetTextureCache();
-    const bool in_pass = rasterizer.GetRuntime().GetScheduler().IsRendering();
-    const auto has_image = [&](VAddr address, u64 size) {
-        bool found = false;
-        texture_cache.ForEachImageInRegion(address, size, [&](VideoCore::ImageId, auto&) {
-            found = true;
-            return true;
-        });
-        return found;
-    };
-    const bool src_gpu = buffer_cache.IsRegionGpuModified(src_base + src_min, src_max - src_min);
-    const bool dst_gpu = buffer_cache.IsRegionGpuModified(dst_base + dst_min, dst_max - dst_min);
-    const bool image = has_image(src_base + src_min, src_max - src_min) ||
-                       has_image(dst_base + dst_min, dst_max - dst_min);
-    const bool eligible = !src_gpu && !dst_gpu && !image;
-#ifdef __APPLE__
-    if (stats) {
-        auto& s = copy_shader_batches;
-        s[CopyBatchTotal].fetch_add(1, std::memory_order_relaxed);
-        s[CopyBatchInPass].fetch_add(in_pass, std::memory_order_relaxed);
-        s[CopyBatchSrcGpu].fetch_add(src_gpu, std::memory_order_relaxed);
-        s[CopyBatchDstGpu].fetch_add(dst_gpu, std::memory_order_relaxed);
-        s[CopyBatchImage].fetch_add(image, std::memory_order_relaxed);
-        s[CopyBatchCpu].fetch_add(enabled && eligible, std::memory_order_relaxed);
-    }
-#endif
-    if (!enabled || !eligible) {
-        return false;
-    }
-    // Copies of guest memory still queued for the copy threads must read the old data.
-    rasterizer.WaitHostCopies();
-    for (const auto& copy : copies) {
-        std::memcpy(reinterpret_cast<void*>(dst_base + copy.dstOffset),
-                    reinterpret_cast<const void*>(src_base + copy.srcOffset), copy.size);
-    }
-    return true;
-}
-
 static bool ExecuteCopyShaderHLE(const Shader::Info& info, const AmdGpu::ComputeProgram& cs_program,
                                  Rasterizer& rasterizer) {
     auto& runtime = rasterizer.GetRuntime();
@@ -266,13 +207,6 @@ static bool ExecuteCopyShaderHLE(const Shader::Info& info, const AmdGpu::Compute
             src_offset_max = new_src_offset_max;
             dst_offset_min = new_dst_offset_min;
             dst_offset_max = new_dst_offset_max;
-        }
-
-        const auto batch = std::span{copies}.subspan(batch_start, batch_end - batch_start);
-        if (CopyOnCpu(rasterizer, src_buf_sharp.base_address, dst_buf_sharp.base_address,
-                      src_offset_min, src_offset_max, dst_offset_min, dst_offset_max, batch)) {
-            batch_start = batch_end;
-            continue;
         }
 
         // Obtain buffers for the total source and destination ranges.
