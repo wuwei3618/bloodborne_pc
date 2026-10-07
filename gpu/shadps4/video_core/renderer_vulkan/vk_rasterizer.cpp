@@ -118,6 +118,18 @@ bool IsKnownFormat(AmdGpu::DataFormat data_fmt, AmdGpu::NumberFormat num_fmt) {
 }
 } // namespace
 
+/// bbport: draws dropped to measure their GPU cost (BbToggle::SkipPatchDraws, SkipRectQuadDraws).
+static bool SkippedForMeasurement(const AmdGpu::Regs& regs) {
+    const auto type = regs.primitive_type;
+    if (type == AmdGpu::PrimitiveType::PatchPrimitive) {
+        return BbToggle::Disabled(BbToggle::SkipPatchDraws);
+    }
+    if (type == AmdGpu::PrimitiveType::RectList || type == AmdGpu::PrimitiveType::QuadList) {
+        return BbToggle::Disabled(BbToggle::SkipRectQuadDraws);
+    }
+    return false;
+}
+
 bool Rasterizer::FilterDraw() {
     const auto& regs = Regs();
     if (regs.color_control.mode == AmdGpu::ColorControl::OperationMode::EliminateFastClear) {
@@ -139,6 +151,9 @@ bool Rasterizer::FilterDraw() {
     if (regs.primitive_type == AmdGpu::PrimitiveType::None) {
         LOG_TRACE(Render_Vulkan, "Primitive type 'None' skipped");
         ScopedMarkerInsert("PrimitiveTypeNone");
+        return false;
+    }
+    if (SkippedForMeasurement(regs)) {
         return false;
     }
 
@@ -880,7 +895,8 @@ bool Rasterizer::FilterDrawPasses() const {
     using Mode = AmdGpu::ColorControl::OperationMode;
     const auto mode = regs.color_control.mode;
     if (mode == Mode::EliminateFastClear || mode == Mode::FmaskDecompress ||
-        mode == Mode::Resolve || regs.primitive_type == AmdGpu::PrimitiveType::None) {
+        mode == Mode::Resolve || regs.primitive_type == AmdGpu::PrimitiveType::None ||
+        SkippedForMeasurement(regs)) {
         return false;
     }
     const bool depth_copy =

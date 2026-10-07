@@ -62,6 +62,11 @@ enum : std::uint64_t {
     // when nothing moves. Static-camera flicker of railings/window bars p99.9 -45% (2026-10-03).
     TaaKeepNearerHistory = 1ull << 55,
     SceneMipBias = 1ull << 57, ///< negative LOD bias of G-buffer samplers at reduced scene sizes
+    // Measurement only (bit set: those draws are dropped, the picture is wrong): what the game's
+    // tessellated draws, and the rect and quad lists bbport draws with tessellation, cost the
+    // GPU. On a Mac, KosmicKrisp runs a compute pass before each of them.
+    SkipPatchDraws = 1ull << 58,
+    SkipRectQuadDraws = 1ull << 59,
     // Bits 20-29 are used as raw debug toggles by the camera/object motion and the upscaler.
 };
 inline bool Disabled(std::uint64_t bit) {
