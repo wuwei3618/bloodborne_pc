@@ -86,9 +86,13 @@ struct MotionVectors {
     static constexpr u32 PreviousLocation = 31; ///< varying: previous clip position, z = valid
     static constexpr u32 Output = 7;            ///< color attachment index
     /// Per-draw parameters (u32x4: store base, load base, vertices per instance, flags) and
-    /// the position array (vec4 per vertex; element 0 is scratch), fixed for the session.
+    /// the position array (vec4 per vertex; element 0 is scratch), fixed for the session. The
+    /// vertex shader reads both addresses from these specialization constants, so its SPIR-V
+    /// does not depend on the session and the pipeline cache can keep it.
     static inline u64 params_address = 0;
     static inline u64 positions_address = 0;
+    static constexpr u32 ParamsAddressSpecId = 0;
+    static constexpr u32 PositionsAddressSpecId = 1;
     static constexpr u32 FlagStore = 1;
     static constexpr u32 FlagLoad = 2;
 };

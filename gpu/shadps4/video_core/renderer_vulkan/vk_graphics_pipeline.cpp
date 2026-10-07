@@ -166,6 +166,25 @@ GraphicsPipeline::GraphicsPipeline(
         .pDynamicStates = dynamic_states.data(),
     };
 
+    // bbport: object motion vertex shaders read this session's buffer addresses from
+    // specialization constants (Shader::MotionVectors). Every vertex stage gets them while object
+    // motion is on: Vulkan ignores entries for constants a shader does not have, and pipelines
+    // preloaded from the cache do not carry their stages' runtime info.
+    const std::array<u64, 2> motion_addresses{Shader::MotionVectors::params_address,
+                                              Shader::MotionVectors::positions_address};
+    const std::array<vk::SpecializationMapEntry, 2> motion_entries{{
+        {.constantID = Shader::MotionVectors::ParamsAddressSpecId, .offset = 0, .size = sizeof(u64)},
+        {.constantID = Shader::MotionVectors::PositionsAddressSpecId,
+         .offset = sizeof(u64),
+         .size = sizeof(u64)},
+    }};
+    const vk::SpecializationInfo motion_specialization = {
+        .mapEntryCount = static_cast<u32>(motion_entries.size()),
+        .pMapEntries = motion_entries.data(),
+        .dataSize = sizeof(motion_addresses),
+        .pData = motion_addresses.data(),
+    };
+
     boost::container::static_vector<vk::PipelineShaderStageCreateInfo, MaxShaderStages>
         shader_stages;
     auto stage = u32(Shader::SwStage::Vertex);
@@ -174,6 +193,8 @@ GraphicsPipeline::GraphicsPipeline(
             .stage = vk::ShaderStageFlagBits::eVertex,
             .module = modules[stage],
             .pName = "main",
+            .pSpecializationInfo =
+                Shader::MotionVectors::positions_address ? &motion_specialization : nullptr,
         });
     }
     stage = u32(Shader::SwStage::Geometry);

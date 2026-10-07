@@ -649,6 +649,16 @@ void EmitContext::DefineOutputs() {
                 motion_out_prev = DefineOutput(F32[4], MotionVectors::PreviousLocation);
                 Name(motion_out_cur, "motion_cur");
                 Name(motion_out_prev, "motion_prev");
+                // The pipeline sets both addresses; the defaults differ only so that the two
+                // declarations stay separate.
+                motion_params_address = SpecConstant(U64, u64{0});
+                motion_positions_address = SpecConstant(U64, u64{1});
+                Decorate(motion_params_address, spv::Decoration::SpecId,
+                         MotionVectors::ParamsAddressSpecId);
+                Decorate(motion_positions_address, spv::Decoration::SpecId,
+                         MotionVectors::PositionsAddressSpecId);
+                Name(motion_params_address, "motion_params_address");
+                Name(motion_positions_address, "motion_positions_address");
             }
             if (needs_clip_distance_emulation) {
                 clip_distances = Id{DefineOutput(F32[MaxEmulatedClipDistances], 0)};

@@ -255,6 +255,8 @@ public:
     // bbport: object motion vectors (runtime_info.h, MotionVectors).
     Id motion_out_cur{};
     Id motion_out_prev{};
+    Id motion_params_address{};
+    Id motion_positions_address{};
     Id motion_in_cur{};
     Id motion_in_prev{};
     Id motion_frag_out{};

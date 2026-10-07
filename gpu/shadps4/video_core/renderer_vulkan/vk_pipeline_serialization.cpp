@@ -15,6 +15,19 @@ namespace Serialization {
 static constexpr u32 ShaderBinaryVersion = 7u; // bbport: interpolated integer fix (Pascal)
 static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
 static constexpr u32 PipelineKeyVersion = 5u; // bbport: Info layout (ImageResource::needs_native)
+// bbport: set in the binary version of object motion vertex shaders whose buffer addresses are
+// specialization constants. Older entries of these shaders hold the addresses of the run that
+// compiled them.
+static constexpr u32 MotionAddressesFlag = 0x80000000u;
+
+static bool IsMotionVertexShader(const Shader::RuntimeInfo& runtime_info) {
+    return runtime_info.sw_stage == Shader::SwStage::Vertex &&
+           runtime_info.hw_stage == Shader::HwStage::Vertex && runtime_info.hw.vs.motion_vectors;
+}
+
+static u32 BinaryVersion(const Shader::RuntimeInfo& runtime_info) {
+    return ShaderBinaryVersion | (IsMotionVertexShader(runtime_info) ? MotionAddressesFlag : 0u);
+}
 } // namespace Serialization
 
 namespace Vulkan {
@@ -57,6 +70,23 @@ void RegisterPipelineData(const GraphicsPipelineKey& key, u64 hash,
                                        fmt::format("g_{:#018x}", hash), ar.TakeOff());
 }
 
+Serialization::Archive SerializeShaderMeta(const Shader::Info& info,
+                                           const Shader::StageSpecialization& spec,
+                                           size_t perm_hash, size_t perm_idx) {
+    Serialization::Archive ar;
+    Serialization::Writer meta{ar};
+
+    meta.Write(Serialization::ShaderMetaVersion);
+    meta.Write(Serialization::BinaryVersion(spec.runtime_info));
+
+    meta.Write(perm_hash);
+    meta.Write(perm_idx);
+
+    spec.Serialize(ar);
+    info.Serialize(ar);
+    return ar;
+}
+
 void RegisterShaderMeta(const Shader::Info& info,
                         const std::optional<Shader::Gcn::FetchShaderData>& fetch_shader_data,
                         const Shader::StageSpecialization& spec, size_t perm_hash,
@@ -65,20 +95,9 @@ void RegisterShaderMeta(const Shader::Info& info,
         return;
     }
 
-    Serialization::Archive ar;
-    Serialization::Writer meta{ar};
-
-    meta.Write(Serialization::ShaderMetaVersion);
-    meta.Write(Serialization::ShaderBinaryVersion);
-
-    meta.Write(perm_hash);
-    meta.Write(perm_idx);
-
-    spec.Serialize(ar);
-    info.Serialize(ar);
-
     Storage::DataBase::Instance().Save(Storage::BlobType::ShaderMeta,
-                                       fmt::format("{:#018x}", perm_hash), ar.TakeOff());
+                                       fmt::format("{:#018x}", perm_hash),
+                                       SerializeShaderMeta(info, spec, perm_hash, perm_idx).TakeOff());
 }
 
 void RegisterShaderBinary(std::vector<u32>&& spv, u64 pgm_hash, size_t perm_idx) {
@@ -104,7 +123,7 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
 
     u32 binary_version{};
     meta.Read(binary_version);
-    if (binary_version != Serialization::ShaderBinaryVersion) {
+    if ((binary_version & ~Serialization::MotionAddressesFlag) != Serialization::ShaderBinaryVersion) {
         return false;
     }
 
@@ -115,9 +134,11 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     spec.Deserialize(ar);
     info.Deserialize(ar);
 
-    // Motion vertex shaders embed session-local buffer device addresses. They must be
-    // recompiled for the current allocation, never loaded from a previous process.
-    if (info.hw_stage == Shader::HwStage::Vertex && spec.runtime_info.hw.vs.motion_vectors) {
+    // bbport: object motion vertex shaders load only when written with their buffer addresses as
+    // specialization constants, and only in a run with object motion on (which has the buffers).
+    if (binary_version != Serialization::BinaryVersion(spec.runtime_info) ||
+        (Serialization::IsMotionVertexShader(spec.runtime_info) &&
+         Shader::MotionVectors::positions_address == 0)) {
         return false;
     }
 

@@ -210,6 +210,10 @@ public:
     /// Returns a numeric scalar constant.
     Id Constant(Id result_type, const Literal& literal);
 
+    /// bbport: returns a numeric scalar specialization constant with a default value. Like all
+    /// declarations, one with the same type and default as an earlier one returns that one.
+    Id SpecConstant(Id result_type, const Literal& literal);
+
     /// Returns a numeric scalar constant.
     Id ConstantComposite(Id result_type, std::span<const Id> constituents);
 
