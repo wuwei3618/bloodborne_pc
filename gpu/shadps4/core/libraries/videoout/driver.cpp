@@ -23,6 +23,7 @@
 #include "video_core/renderer_vulkan/vk_compute_first_draw.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_shader_hle.h"
 
 extern std::unique_ptr<Vulkan::Presenter> presenter;
 extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
@@ -467,6 +468,19 @@ void VideoOutDriver::Flip(const Request& req) {
                         list_restart + strips + rect_quad + patches + fans, list_restart, strips,
                         rect_quad, patches, fans);
             Vulkan::Scheduler::PrintPassStats(frames);
+            const auto batches = [&](Vulkan::CopyBatchStat stat) {
+                auto& count = Vulkan::copy_shader_batches[stat];
+                return frames ? double(count.exchange(0)) / frames : 0.0;
+            };
+            const double copy_total = batches(Vulkan::CopyBatchTotal);
+            const double copy_in_pass = batches(Vulkan::CopyBatchInPass);
+            const double copy_src_gpu = batches(Vulkan::CopyBatchSrcGpu);
+            const double copy_dst_gpu = batches(Vulkan::CopyBatchDstGpu);
+            const double copy_image = batches(Vulkan::CopyBatchImage);
+            const double copy_cpu = batches(Vulkan::CopyBatchCpu);
+            std::printf("Copy shader: %.1f batches/frame, %.1f in render passes; source written by "
+                        "the GPU %.1f, destination %.1f, image %.1f; copied on the CPU %.1f\n",
+                        copy_total, copy_in_pass, copy_src_gpu, copy_dst_gpu, copy_image, copy_cpu);
 #endif
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
