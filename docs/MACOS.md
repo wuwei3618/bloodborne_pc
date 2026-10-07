@@ -90,7 +90,9 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   keeps no disk cache of its own: the port saves the pipelines it used (`user/cache`) and
   compiles them again at the next start, before the title screen (about 15 s for 700). Each new
   render size (another output resolution or preset) needs its own pipelines, so the first run
-  with new settings stutters more.
+  with new settings stutters more. Pipelines whose vertex shader writes the port's object
+  motion vectors (about a quarter of them) contain buffer addresses that are valid for one run
+  only: they are compiled again the first time they are needed in every run.
 - With a frame rate patch (`BB_FPS=60`, or `uncap`, the default) the character creator shows no
   character model; with `BB_FPS=30` (the game's own 30 FPS, no patch) it does. In the game
   itself models are shown with every preset. To see the model while creating a character,
@@ -108,9 +110,11 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   an M5 Pro, from light to heavy scenes: 1080p with FSR 3.1 native AA 37, 32, 30 and 28 FPS;
   4K output with Performance 31, 29.5, 28.5 and 27 FPS; with Quality (scene 2560x1440) 27, 25
   and 22.5 FPS in the three heavier groups, which is too slow (next item).
-- Well below 30 FPS the game runs slower than real time: at 19 to 25 FPS (4K output with
-  Quality) movement was visibly slowed, at 26 to 33 FPS (4K output with Performance) it was
-  not.
+- Below 30 FPS the game runs slower than real time. The game advances at most 1/30 s per
+  frame: the original game always advances 1/30 s, and the frame rate patches use the real
+  frame time up to that limit. At 22 FPS the game runs at about 73% speed, at 27 FPS at about
+  90%: at 19 to 25 FPS (4K output with Quality) movement was visibly slowed, at 26 to 33 FPS
+  (4K output with Performance) it was not.
 
 ## Differences from Linux
 
