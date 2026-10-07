@@ -3414,14 +3414,16 @@ void Rasterizer::UpdatePrimitiveState(const bool is_indexed) const {
     ASSERT_MSG(!is_indexed || !prim_restart || regs.primitive_restart_index == 0xFFFF ||
                    regs.primitive_restart_index == 0xFFFFFFFF,
                "Primitive restart index other than -1 is not supported yet");
-    // bbport: BB_STRIP_RESTART=1 turns restart on for indexed 16-bit strips that have it off.
-    // Metal restarts strips at index 0xFFFF in any case, so KosmicKrisp otherwise rewrites their
-    // indices to 32 bits in a compute pass, which ends the render pass. Only a strip that uses
-    // vertex 65535 draws differently.
-    static const bool strip_restart = [] {
-        const char* env = std::getenv("BB_STRIP_RESTART");
-        return env && env[0] == '1';
-    }();
+    // bbport: restart on for indexed 16-bit strips that have it off (by default on macOS,
+    // BB_STRIP_RESTART). Metal restarts strips at index 0xFFFF in any case, so KosmicKrisp
+    // otherwise rewrites their indices to 32 bits in a compute pass, which ends the render pass:
+    // 43 such draws per frame cost 2.8 ms on an M5 Pro. Only a strip that uses vertex 65535
+    // draws differently.
+#ifdef __APPLE__
+    static const bool strip_restart = StripRestartWanted(std::getenv("BB_STRIP_RESTART"), true);
+#else
+    static const bool strip_restart = StripRestartWanted(std::getenv("BB_STRIP_RESTART"), false);
+#endif
     const bool index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
     auto kind = ClassifyComputeFirstDraw(regs.primitive_type, is_indexed, prim_restart, index16);
     const bool strip_restart_on = strip_restart && kind == ComputeFirstDraw::Strip16;

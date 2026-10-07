@@ -46,5 +46,13 @@ int main() {
     }
 
     assert(ClassifyComputeFirstDraw(PrimitiveType::None, true, true, true) == Kind::None);
+
+    // BB_STRIP_RESTART: on by default on macOS, where KosmicKrisp is the driver.
+    using Vulkan::StripRestartWanted;
+    assert(StripRestartWanted(nullptr, true));
+    assert(!StripRestartWanted(nullptr, false));
+    assert(StripRestartWanted("", true));
+    assert(!StripRestartWanted("0", true));
+    assert(StripRestartWanted("1", false));
     std::puts("Compute-first draws: PASS");
 }

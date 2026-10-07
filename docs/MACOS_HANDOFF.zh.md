@@ -22,7 +22,9 @@ GPU 命令线程约三分之二的时间在等 GPU 执行完已提交的工作�
 - 提交：从 `0c62f20` 起（`git log 5224a6d..macos-port`），全部在 `macos-port`，未合并到 main。
   真机测试期间的提交：`1c23636`（窗口放到主线程）、`8d2768f`（影片停止时的线程等待）、
   `7fb005a`（`BB_PM4_CHECK` 诊断）、`d9ae010`（提交节流的空闲信号）、`78fd0e3`（FSR 3 显存类型，
-  第 5 节第 17 条）、`fb69ff4`（运动矢量着色器进入管线缓存，第 5 节第 20 条）、`c4d1ccb`（中文菜单）。
+  第 5 节第 17 条）、`fb69ff4`（运动矢量着色器进入管线缓存，第 5 节第 20 条）、`c4d1ccb`（中文菜单）、
+  `9a65902`（`BB_GPU_PROFILE` 的时间戳池上限，第 5 节第 26 条）、`f85c326` 和 `25579ce`（先经过计算的绘制的计数、
+  带状图元的重启开关），以及把带状图元重启和关闭物体运动矢量设为 Mac 默认值的提交（第 5 节第 25 条）。
 - CI：`.github/workflows/macos.yml`，每次推送跑两个任务（约 15 分钟）：
   - **Intel (x86_64)**（`macos-15-intel`）：x86_64 Homebrew 装依赖 → `build.sh --test` → GPU 库测试 →
     Python 测试 → `packaging/macos_package.sh --tests` → 上传产物 `bbport-macos-x86_64`（用户包，
@@ -37,6 +39,8 @@ GPU 命令线程约三分之二的时间在等 GPU 执行完已提交的工作�
   还没在 Linux 上验证，合并前要补做。FSR 3 显存类型的补丁（`gpu/patches/fsr-vulkan/0002`）在 Linux 上也生效，
   只在设备没有“只在设备本地”的显存类型时改变选择；新测试 `fsr3-memory-type-test` 也要在 Linux 上编译运行一次。
   `fb69ff4`（着色器生成、管线创建、缓存序列化、预热时机、sirit）和 `c4d1ccb`（菜单、设置）改的也是共用代码。
+  `9a65902`（`vk_gpu_profiler`）、`f85c326`、`25579ce` 和默认值提交（`vk_rasterizer.cpp`、`driver.cpp`、
+  `bbport_settings.h`）也改了共用文件；其中计数只在 Mac 上编译，Linux 上的默认行为不变。
   仓库没有 Linux CI。
 
 ## 2. 用户的环境与限制
@@ -239,19 +243,48 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
     也就是等 GPU 执行完已提交工作的时间。游戏场景里各负载段的中位数：60 帧那一轮（没有 FSR 3）62% 到 68%，
     1080p 加 FSR 3 原生抗锯齿 64% 到 73%，4K 加 Quality 68% 到 73%，4K 加 Performance 67% 到 77%。锁 30 帧时
     只有约 3%，因为每帧都有空余时间。也就是说，这个线程约三分之一的时间在做自己的工作，其余时间在等 GPU。
-    提高渲染分辨率会让帧率下降（第 6.1 节），说明等待时间和 GPU 的工作量有关。还不清楚 GPU 本身是否满负荷：
-    游戏运行时可以用 `ioreg -r -d 1 -w 0 -c IOAccelerator` 读 `Device Utilization %`（不需要 sudo，约每秒更新）。
-    利用率不高，说明时间主要花在提交和等待的往返上；接近 100%，说明是 GPU 执行本身慢。
+    提高渲染分辨率会让帧率下降（第 6.1 节），说明等待时间和 GPU 的工作量有关。游戏运行时用
+    `ioreg -r -d 1 -w 0 -c IOAccelerator` 读 `Device Utilization %`（不需要 sudo，约每秒更新），游戏场景里是 87% 到 93%，
+    所以瓶颈在 GPU 执行本身（第 24、25 条）。
 22. 物体运动矢量在 Mac 上不起作用：打开菜单里的“显示运动矢量（调试）”，移动的角色身上没有蓝色（蓝色表示像素拿到了
     物体自己的运动矢量），改动前（`8c6f1e9`）和改动后（`fb69ff4`）的包都一样。所以 FSR 在 Mac 上只有镜头的运动矢量，
     移动的角色会留下拖影。原因还没查。已排除的：KosmicKrisp 能在顶点着色器里通过缓冲区设备地址写入（独立小程序验证）。
     下一步：用 `BB_MOTION_SELECT_LOG=1` 看哪些绘制选用了运动变体，用 `BB_OBJECT_MOTION_ALL=1` 让所有绘制都用运动变体，
-    再查片段着色器的运动输出和合成。查清之前，设置 `object_motion=0` 可以省下这部分 GPU 工作，画面和现在一样。
+    再查片段着色器的运动输出和合成。打开时每帧多用约 2.6 毫秒（第 25 条），所以现在 Mac 上默认关闭
+    （`bbport_settings.h` 的 `ObjectMotionDefault`），`object_motion=1` 或菜单可以打开。
 23. 标题画面准备播放闲置影片时偶发设备丢失：2026-10-07 有一次运行在标题画面闲置约 100 秒后出错，日志为
     `vk_scheduler.cpp:437 SubmitExecution: Assertion Failed! Device lost during submit`，进程退出码 23。同一时刻系统日志
     里先有内核 `AGXG17X` 的一条事件信号消息，接着是 `bb-probe ... (IOGPU) IOGPUMetalError: <private>`，错误内容被系统
     隐去，看不出是无效地址还是执行超时。下一次运行同样闲置，约 100 秒时只有一次 63 毫秒的卡顿，约 145 秒影片正常开始。
     复现时可以加 `MTL_SHADER_VALIDATION=1`，Metal 会报出越界访问的着色器和地址。
+24. 和 shadPS4 对比（2026-10-07）：shadPS4 0.19.0 的 macOS 版（`shadps4 -p <补丁文件> -g <游戏目录>`，配置在
+    `~/Library/Application Support/shadPS4/config.json`，存档在同一目录的 `home/1000/savedata/`）用的 KosmicKrisp 和
+    bbport 包里的是同一个文件（sha256 相同，`b628375fb1`，也是 `shadexternals/mesa` 当时最新的提交）。补丁文件要把
+    `Uncap FPS++` 的 `AppVer` 改成 `01.00`，shadPS4 才会应用（171 处写入）。在猎人梦境同一位置、1080p、不用超分、
+    480 Hz 垂直同步：shadPS4 32 到 33 FPS，bbport 34.5 到 36 FPS（关闭物体运动矢量），两边 GPU 利用率都是 87% 到 92%。
+25. KosmicKrisp 先用计算处理的绘制：KosmicKrisp 遇到下面几类绘制时，先在计算编码器里重写索引或运行曲面细分，
+    再绘制（Mesa `src/kosmickrisp/vulkan/kk_cmd_draw.c` 的 `requires_unroll` 和曲面细分路径）。Metal 不能在渲染编码器
+    中途插入计算，所以每遇到一次，当前渲染过程就要结束，附件写回显存后再读回来。类型：开着图元重启的带索引列表
+    （设备启用了 `primitiveTopologyListRestart` 时）、关着图元重启的 16 位索引带状图元（Metal 的带状图元遇到 0xFFFF
+    总会断开，所以要把索引改成 32 位）、曲面细分（bbport 用它画 RectList 和 QuadList，游戏自己也用）、三角扇。
+    `BB_FRAME_STATS=1` 时 Mac 版每个统计段多打印一行 `Compute-first draws`（`vk_compute_first_draw.h`，测试
+    `compute-first-draw-test`）。在猎人梦境同一位置：开着重启的列表 0 次，16 位带状图元 43 次，RectList 22 次，游戏的
+    曲面细分 27 次（每帧）。管线缓存里 733 个图形管线：三角形列表 510、三角形带 180、点列表 7、RectList 15、
+    曲面细分 21，没有 QuadList，也没有用末顶点作提供顶点的管线（那种情况配合平面插值也要重写）。处理：Mac 上对这类
+    16 位带状图元打开图元重启，KosmicKrisp 就直接绘制；只有用到第 65536 个顶点（索引 0xFFFF）的带状图元画法会不同，
+    实测画面没有异常。`BB_STRIP_RESTART=0` 关闭，`=1` 在其他平台打开。同一位置、4K 输出加 Performance 的每帧时间：
+    原来 36.8 毫秒（27.2 FPS），打开这项后少 2.8 毫秒，再关闭物体运动矢量又少 2.6 毫秒（31.4 毫秒，31.8 FPS，即现在的
+    Mac 默认设置）；FSR 3.1 本身约占 4.5 毫秒。
+26. `BB_GPU_PROFILE=1` 在 KosmicKrisp 上得不到可用的数据：时间戳查询池最多 4096 个（`9a65902` 已改为能建成），但在渲染
+    过程外写的时间戳读回来是 0（KosmicKrisp 源码注释也提到重复写入可能返回 0），相减后按无符号数回绕成每帧 10^14 毫秒；
+    每个时间戳还要额外插入一次计算调度和一次结果转换，游戏帧率从约 30 降到 11 到 15。渲染过程内的时间戳数值正常。
+27. 游戏中途崩溃一次（2026-10-07，`compare-1080p.log`）：录制线程执行命令块时遇到虚函数表为空的命令
+    （`libbbgpu.dylib+0x12749e`，`RecordChunk::Execute`，`callq *0x10(%rax)`，rax 为 0），进程以信号 11 退出。崩溃前游戏
+    刚连续存了几次档。新分配的命令块整块清零，所以这是链表指向了还没构造命令的位置。32 份 Mac 日志里只出现过这一次。
+    已排除：游戏线程上的读缺页会通过 `SendCommand` 交给 GPU 线程处理，`DrainDrawPipe` 在 GPU 命令线程以外直接返回。
+28. 换掉 KosmicKrisp 的可能性：MoltenVK 1.4.2 缺少渲染器必需的 `robustBufferAccess2` 和 `nullDescriptor`，还缺几何着色器、
+    逻辑运算、`vertex_input_dynamic_state`、`custom_border_color`、`depth_clip_enable` 等（对比程序在会话临时目录的
+    `spectest/caps.c`），不能直接替换。苹果的 Game Porting Toolkit 只翻译 Direct3D，不适用于 Vulkan 渲染器。
 
 ## 6. 第一次真机运行：预期日志和最可能出问题的地方
 
@@ -308,6 +341,17 @@ Mapped ... bytes, ... segments; applied ... relocations
   `TAA: remove BB_RENDER_RES to use native-resolution TAA`，超分辨率这一步被跳过，约 1080p 的场景直接拉伸到输出
   尺寸。用户感觉帧率明显提高，省下的是 FSR 3 放大到 4K 的开销。重启后 TAA 会按输出分辨率渲染整个场景，4K 下负担
   更大。TAA 本身在 Mac 上仍未测过。
+- 逐项开销（2026-10-07，包 `ci-37586296776`，猎人梦境同一位置，每轮都换回同一份存档，原地站 30 秒，4K 输出，
+  FSR 3.1 Performance，不锁帧；日志 `hd-1-default.log`、`hd-2-strip.log`、`hd-3-nomotion.log`）：
+
+  | 设置 | 帧率 | 每帧时间 | 先经过计算的绘制 |
+  |---|---|---|---|
+  | 原来的默认设置 | 27.2 | 36.8 毫秒 | 92 次 |
+  | 打开 16 位带状图元的重启 | 29.4 | 34.0 毫秒 | 49 次 |
+  | 再关闭物体运动矢量（现在的 Mac 默认） | 31.8 | 31.4 毫秒 | 49 次 |
+  | 打开重启，关闭超分（物体运动矢量开着） | 33.9 | 29.5 毫秒 | 49 次 |
+
+  GPU 利用率都在 87% 到 93%。打开重启后用户转动镜头检查过，画面没有异常。
 
 ## 7. 调试手段
 
@@ -315,7 +359,10 @@ Mapped ... bytes, ... segments; applied ... relocations
 - `sample <pid> 3 -file out.txt`：采样正在运行的游戏 3 秒，得到所有线程的调用栈，包括游戏代码地址
   （游戏镜像从 `0x800000000` 开始），不需要开发者模式。卡住、空转时首选这个。
 - `BB_FRAME_STATS=1`：每 5 秒打印帧率、最慢一帧、着色器编译次数和耗时、GPU 命令线程的空闲比例和它等待 GPU 的
-  比例（`GPU ticks`），以及帧间隔的中位数、标准差和 p99。
+  比例（`GPU ticks`），以及帧间隔的中位数、标准差和 p99。Mac 版还打印 `Compute-first draws`，即每帧有多少次绘制
+  要先经过 KosmicKrisp 的计算处理，按类型分开（第 5 节第 25 条）。
+- `BB_GPU_PROFILE=1` 在 KosmicKrisp 上得不到可用的数据（第 5 节第 26 条）。按项目比较开销，只能用开关对比帧率：
+  在同一位置读同一份存档，原地站 30 秒，比较帧统计。
 - GPU 利用率：`ioreg -r -d 1 -w 0 -c IOAccelerator | grep -o '"Device Utilization %"=[0-9]*'`，约每秒更新一次，
   不需要 sudo。
 - GPU 出错时查系统日志：`/usr/bin/log show --start "<时间>" --end "<时间>" --predicate 'process == "bb-probe" OR process == "kernel"'`。
@@ -358,16 +405,21 @@ Mapped ... bytes, ... segments; applied ... relocations
 
 ## 9. 没做完的事
 
-1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`、`fb69ff4`、`c4d1ccb`）和 FSR 3 显存类型的补丁（`78fd0e3`，包括新测试
-   `fsr3-memory-type-test`），然后再考虑合并。
+1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`、`fb69ff4`、`c4d1ccb`、`9a65902`、`f85c326`、`25579ce`
+   和设置 Mac 默认值的提交）和 FSR 3 显存类型的补丁（`78fd0e3`），包括新测试 `fsr3-memory-type-test` 和
+   `compute-first-draw-test`，然后再考虑合并。Linux 上带状图元的重启默认不变，物体运动矢量默认仍然打开。
 2. FSR 3.1：已修复并在游戏里验证（第 5 节第 17 条、第 6.1 节）；还没测 TAA。
 3. 帧率补丁下角色创建界面不显示模型（第 5 节第 13 条）：可以逐步去掉补丁行，找出是哪几行。
    `60 FPS++` 和 `Uncap FPS++` 有 37 行相同的改动，其中 30 行在 `30 FPS++` 里也有。
-4. 游戏场景的性能：GPU 命令线程约三分之二的时间在等 GPU（第 5 节第 21 条）。下一步在游戏运行时读 GPU 利用率，
-   分清是 GPU 执行慢，还是提交和等待的往返多。
+4. 游戏场景的性能：瓶颈在 GPU 执行（第 5 节第 21、24 条）。已处理 16 位带状图元，物体运动矢量在 Mac 上默认关闭
+   （第 5 节第 25 条）。剩下先经过计算的绘制：RectList 每帧约 22 次，bbport 用曲面细分画它，换成不需要计算的画法要
+   在顶点着色器里得到另外两个顶点的输出，工作量大；游戏自己的曲面细分每帧约 27 次，只能在驱动里解决。每次这类
+   绘制约多用 0.06 毫秒（由 16 位带状图元的实测推算：43 次共 2.8 毫秒）。
 5. 帧率低于 30 时游戏变慢（第 5 节第 19 条）：原因已查清，是原版游戏和帧率补丁共有的 1/30 秒步长上限。如果要放宽
    （例如允许每帧推进 1/20 秒），要改补丁里的常量，可能影响物理和判定，需要维护者决定。
-6. 物体运动矢量在 Mac 上不起作用（第 5 节第 22 条）。
+6. 物体运动矢量在 Mac 上不起作用（第 5 节第 22 条），现在默认关闭。
+6a. 录制线程偶发崩溃（第 5 节第 27 条）：可以在 `Scheduler::Record` 和 `KickRecording` 加一个原子标志，发现两个线程同时
+   记录时打印两边的线程号和调用栈，再出现时就能找到是哪条路径。
 7. 标题画面偶发设备丢失（第 5 节第 23 条）：再出现时加 `MTL_SHADER_VALIDATION=1` 复现。
 8. Retina 屏的 Mac 是否默认使用 4K 输出加 Performance（第 6.1 节），需要维护者决定。
 9. 60 帧预设在达不到 60 帧的机器上帧间隔不均匀（第 5 节第 18 条）。可以考虑让 60 帧预设也用 480 Hz 垂直同步，

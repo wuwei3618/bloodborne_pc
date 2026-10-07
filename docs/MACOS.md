@@ -95,7 +95,8 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   with new settings stutters more.
 - Object motion vectors (the menu's character motion vectors) have no effect on a Mac yet: the
   motion vector debug view shows no object vectors (no blue) on moving characters, so with
-  FSR 3.1 they can leave trails.
+  FSR 3.1 they can leave trails. They are off by default on macOS: turned on, they make each
+  frame about 2.6 ms longer (see Performance). `object_motion=1` or the menu turns them on.
 - Once, the GPU device was lost at the title screen, when the idle movie was about to start
   (`Device lost during submit`, and an `IOGPUMetalError` in the system log); in the next run
   the movie started normally.
@@ -121,6 +122,34 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   frame time up to that limit. At 22 FPS the game runs at about 73% speed, at 27 FPS at about
   90%: at 19 to 25 FPS (4K output with Quality) movement was visibly slowed, at 26 to 33 FPS
   (4K output with Performance) it was not.
+
+## Performance
+
+Measured on an M5 Pro with macOS 27.2, `uncap`, standing still at one spot in the Hunter's
+Dream.
+
+- The GPU is the limit: it is busy about 90% of the time in gameplay, and the GPU command
+  thread waits for it about 70% of the time. shadPS4 0.19.0 with the same KosmicKrisp is no
+  faster: at 1080p without an upscaler, bbport ran at 34.5 to 36 FPS and shadPS4 at 32 to
+  33 FPS (GPU busy 87 to 92% in both).
+- KosmicKrisp prepares some draws in a compute pass before drawing them. Metal has no compute
+  inside a render pass, so each of these ends the render pass and its attachments are stored
+  and loaded again. With `BB_FRAME_STATS=1` the line `Compute-first draws` counts them per
+  frame; at that spot: 43 indexed 16-bit strips with primitive restart off (KosmicKrisp
+  rewrites their indices to 32 bits), 22 rect lists (bbport draws them with tessellation) and
+  27 draws of the game's own tessellation.
+- On macOS bbport turns primitive restart on for those strips, so KosmicKrisp draws them
+  directly; only a strip that uses vertex 65535 draws differently, and none was seen.
+  `BB_STRIP_RESTART=0` turns this off.
+- Frame time at that spot with 4K output and FSR 3.1 Performance: 36.8 ms (27.2 FPS) before;
+  2.8 ms less with restart on for the strips, 2.6 ms less again without object motion vectors
+  (31.4 ms, 31.8 FPS, the macOS defaults now). FSR 3.1 itself took 4.5 ms of the frame.
+- `BB_GPU_PROFILE=1` gives no usable numbers on KosmicKrisp: timestamps written outside a
+  render pass read back as 0, and each one adds a compute dispatch and a resolve, which halves
+  the frame rate.
+- MoltenVK cannot replace KosmicKrisp: it lacks `robustBufferAccess2` and `nullDescriptor`,
+  which the renderer requires, and geometry shaders and logic operations, among others. Apple's
+  Game Porting Toolkit translates Direct3D, not Vulkan.
 
 ## Differences from Linux
 

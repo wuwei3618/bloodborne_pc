@@ -45,6 +45,12 @@ constexpr ComputeFirstDraw ClassifyComputeFirstDraw(AmdGpu::PrimitiveType type, 
     }
 }
 
+/// BB_STRIP_RESTART: turn restart on for indexed 16-bit strips that have it off, so KosmicKrisp
+/// draws them without the index rewrite. On by default on macOS; "0" turns it off, "1" on.
+constexpr bool StripRestartWanted(const char* env, bool apple) {
+    return env && env[0] ? env[0] == '1' : apple;
+}
+
 /// Draws per kind since the last frame statistics (BB_FRAME_STATS=1).
 inline std::array<std::atomic<u64>, static_cast<size_t>(ComputeFirstDraw::Count)>
     compute_first_draws{};

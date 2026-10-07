@@ -46,6 +46,13 @@ inline constexpr int OutputWidths[] = {1280, 1920, 2560, 3840};
 inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
 inline constexpr int OutputCount = 4;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
+/// Object motion vectors have no effect on macOS yet and cost 2.6 ms a frame on an M5 Pro
+/// (docs/MACOS.md): off there by default.
+#ifdef __APPLE__
+inline constexpr bool ObjectMotionDefault = false;
+#else
+inline constexpr bool ObjectMotionDefault = true;
+#endif
 
 struct Values {
     std::atomic<int> upscaler{UpscalerFsr3};
@@ -54,7 +61,7 @@ struct Values {
     std::atomic<float> sharpness{0.3f};
     std::atomic<bool> jitter{true};
     std::atomic<bool> reactive{false};
-    std::atomic<bool> object_motion{true};
+    std::atomic<bool> object_motion{ObjectMotionDefault};
     std::atomic<float> reactive_scale{1.0f};
     std::atomic<float> reactive_threshold{0.2f};
     std::atomic<float> reactive_max{0.9f};
@@ -79,7 +86,7 @@ struct Values {
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;
     int startup_upscaler = UpscalerFsr3;
-    bool startup_object_motion = true;
+    bool startup_object_motion = ObjectMotionDefault;
     bool startup_effects[EffectCount]{};
     int startup_model_lod = 0;
     int startup_output_res = OutputDefault;
