@@ -48,7 +48,9 @@ BB_GAME_DIR=/path/to/CUSA03173 bash bbport.sh 2>&1 | tee bbport-macos.log
 
 The first start is slow: Rosetta 2 translates the programs once. Generated files, saves and
 `bbport.ini` (settings; the GTK launcher is not ported) are kept in the package's folder. The
-in-game menu opens with **Cmd+,** (or L3+R3 on a gamepad).
+in-game menu opens with **Cmd+,** (or L3+R3 on a gamepad). It is in Chinese when Chinese is the
+first language in System Settings (glyphs from the system font Hiragino Sans GB), else in
+Russian; its Язык / 语言 entry, or `language=zh` or `language=ru` in `bbport.ini`, chooses one.
 
 ## Building from source
 

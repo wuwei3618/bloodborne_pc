@@ -48,6 +48,8 @@ Mesa/RADV) has been tested thoroughly.
   at ~26 FPS; now it runs at 90–150 FPS depending on resolution and scene.
 - **In-game menu** (Insert or L3+R3): upscaler, preset, sharpness, output resolution, game
   effects (chromatic aberration, DoF, motion blur, SSAO, the game's own AA, SSR, model LOD).
+  In Russian, or in Chinese when that is the system's first language (`language=auto|zh|ru` in
+  `bbport.ini`; Chinese needs a CJK font such as Noto Sans CJK, or one named by `BB_CJK_FONT`).
 - **GTK4 launcher** and an **AppImage** for the Steam Deck.
 
 ## How it differs from shadPS4

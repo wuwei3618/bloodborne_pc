@@ -60,6 +60,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.model_lod = std::clamp(i, -2, 2);
     } else if (key == "live_resolution") {
         v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
+    } else if (key == "language") {
+        v.language = value == "zh" ? LanguageChinese : value == "ru" ? LanguageRussian : LanguageAuto;
     } else if (key == "output_res") {
         for (int r = 0; r < OutputCount; ++r) {
             if (value == std::to_string(OutputWidths[r]) + "x" + std::to_string(OutputHeights[r])) {
@@ -191,6 +193,9 @@ void Save() {
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");
+    std::fprintf(file, "language=%s\n", v.language == LanguageChinese   ? "zh"
+                                       : v.language == LanguageRussian ? "ru"
+                                                                       : "auto");
     std::fclose(file);
 }
 

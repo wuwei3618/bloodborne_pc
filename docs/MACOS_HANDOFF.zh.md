@@ -124,7 +124,7 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
 | `src/runtime_thread.c` + `src/probe.c` | 游戏 TLS：脚本已把 `mov rax, fs:[0]` 改成 gs 前缀；macOS 上 `probe.c` 的 `patch_thread_pointer_loads` 把位移改成 `pthread TSD key*8`，`runtime_thread.c` 用 `pthread_setspecific` 写入。读 `gs:[key*8]` 就等于 `pthread_getspecific`，Rosetta 下已验证可用 |
 | `src/probe.c` | SIGBUS 也当作访问错误；`mach_vm_read` 读游戏内存；看门狗用 `task_threads` + `pthread_kill(SIGUSR2)` 抓所有线程；`use_packaged_vulkan_driver()`：没有设置 `VK_DRIVER_FILES` 时，自动使用 `<exe 目录>/vulkan/icd.d` |
 | `gpu/CMakeLists.txt` | VMA 头文件内置（`third_party/vma`）；不用 X11；用 `-undefined dynamic_lookup`；PGO 仅 GCC |
-| `gpu/shim/*` | SDL 的 Metal 视图作为 surface（`window.cpp`）；辅助线程用 utility QoS 代替 SCHED_IDLE；Mach-O 的字体嵌入汇编；菜单键 Cmd+, |
+| `gpu/shim/*` | SDL 的 Metal 视图作为 surface（`window.cpp`）；辅助线程用 utility QoS 代替 SCHED_IDLE；Mach-O 的字体嵌入汇编；菜单键 Cmd+,；菜单中文（`bbport_overlay_text.h` 按俄文原文给出中文，`bbport.ini` 的 `language=auto\|zh\|ru`，`auto` 按系统首选语言；中文字形取自系统字体冬青黑体，`BB_CJK_FONT` 可指定其他字体文件） |
 | `gpu/shadps4/...` | libc++ 兼容：`regs.h` 的 `BlockSet` 替代 libstdc++ 的 `bitset::_Find_first`；`texture_cache.h` 不用 `atomic_ref<const T>`；`pm4_cmds.h` 的地址转换；`liverpool.cpp` 用 `thread_info`；`vk_platform.cpp` 加 portability 枚举（MoltenVK）；AvPlayer 句柄从低地址堆分配；userfaultfd 只在 Linux |
 | `build.sh` / `run.sh` | Apple 芯片上自动 `arch -x86_64 /bin/bash` 重启自己；只用 `/usr/local` 的 x86_64 Homebrew；rpath 和 `-headerpad_max_install_names`；run.sh 调大文件描述符上限，没有 x86_64 驱动时给出提示 |
 | `packaging/macos_bundle.py` | 把 Homebrew 库收进 `lib/`，按程序引用时的名字存放（`libvulkan.1.dylib` 会被 GPU 库按名字 dlopen），引用全改成 `@rpath`，重新做 ad-hoc 签名，最后检查没有外部路径残留 |
@@ -136,7 +136,7 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
 | `gpu/shim/bbport_submission_gate.h` + `gnmdriver.cpp` | 提交锁（`BbPort::SubmissionGate`）：设置和清除都在互斥锁内读取 GPU 当时的状态，GPU 还有提交时收到的空闲信号不清除提交锁 |
 | `liverpool.cpp` | `BB_PM4_CHECK=1`：提交时保存命令缓冲副本，处理开始时和解析出错时与内存比对 |
 | `gpu/patches/fsr-vulkan/0002-*.patch` | FSR 3.1.4 的 Vulkan 后端（`ffx_vk.cpp` 的 `findMemoryTypeIndex`）：设备没有“只在设备本地”的显存类型时，使用“设备本地且主机可见”的类型 |
-| `tests/` | `test_runtime.c` 补了 macOS 没有的 `pthread_barrier`；GPU 测试桩改用 `__thread`；两个 Python 测试把临时目录解析成真实路径；`test_probe.py` 检查 SDL 视频子系统在主线程上启动；`test_hle_thread.cpp`、`test_submission_gate.cpp`、`test_fsr3_memory_type.cpp` |
+| `tests/` | `test_runtime.c` 补了 macOS 没有的 `pthread_barrier`；GPU 测试桩改用 `__thread`；两个 Python 测试把临时目录解析成真实路径；`test_probe.py` 检查 SDL 视频子系统在主线程上启动；`test_hle_thread.cpp`、`test_submission_gate.cpp`、`test_fsr3_memory_type.cpp`；`test_overlay_text.py` 检查菜单每条俄文都有中文、格式符一致、中文旁用全角标点 |
 
 ## 5. 已经踩过的坑（关键事实）
 
