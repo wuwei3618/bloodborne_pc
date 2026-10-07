@@ -180,6 +180,9 @@ add_executable(submission-gate-test EXCLUDE_FROM_ALL ../tests/test_submission_ga
 target_compile_options(submission-gate-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(submission-gate-test PRIVATE shim)
 target_link_libraries(submission-gate-test PRIVATE Threads::Threads)
+add_executable(fsr3-memory-type-test EXCLUDE_FROM_ALL ../tests/test_fsr3_memory_type.cpp)
+target_compile_options(fsr3-memory-type-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+target_link_libraries(fsr3-memory-type-test PRIVATE ffx-vulkan::fsr3-vk-backend-1.1.4)
 
 add_executable(scene-resolution-test EXCLUDE_FROM_ALL ../tests/test_scene_resolution.cpp ../tests/test_gpu_runtime_stubs.cpp)
 target_include_directories(scene-resolution-test PRIVATE shim shadps4 third_party/gcn/include)
