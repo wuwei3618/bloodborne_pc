@@ -216,7 +216,7 @@ More in [docs/](docs); recent changes: [docs/CHANGES_2026-10-02.md](docs/CHANGES
 
 Tests: `bash build.sh --test`, `python3 -m unittest discover -s tests`, and
 `ninja -C out/gpu motion-history-test ui-composition-test scene-resolution-test motion-shader-test hle-thread-test
-submission-gate-test fsr3-memory-type-test`.
+submission-gate-test fsr3-memory-type-test compute-first-draw-test`.
 
 ## Roadmap
 

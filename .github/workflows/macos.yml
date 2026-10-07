@@ -46,8 +46,8 @@ jobs:
 
       - name: GPU library tests
         run: |
-          ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test
-          for test in motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test; do
+          ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test compute-first-draw-test
+          for test in motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test compute-first-draw-test; do
             ./out/gpu/$test
           done
 
@@ -114,7 +114,7 @@ jobs:
 
       - name: GPU library tests
         run: |
-          for test in motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test; do
+          for test in motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test compute-first-draw-test; do
             ./out/gpu/$test
           done
 

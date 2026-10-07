@@ -20,6 +20,7 @@
 #include "core/libraries/videoout/videoout_error.h"
 #include "imgui/renderer/imgui_core.h"
 #include "video_core/amdgpu/liverpool.h"
+#include "video_core/renderer_vulkan/vk_compute_first_draw.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -450,6 +451,21 @@ void VideoOutDriver::Flip(const Request& req) {
                         BbStats::tick_wait_ns.exchange(0) / (window * 1e7),
                         frames ? double(BbStats::reduced_draws.exchange(0)) / frames : 0.0,
                         frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
+#ifdef __APPLE__
+            // Draws KosmicKrisp prepares in a compute pass: each one ends the render pass.
+            const auto per_frame = [&](Vulkan::ComputeFirstDraw kind) {
+                auto& count = Vulkan::compute_first_draws[static_cast<size_t>(kind)];
+                return frames ? double(count.exchange(0)) / frames : 0.0;
+            };
+            const double list_restart = per_frame(Vulkan::ComputeFirstDraw::ListRestart);
+            const double strips = per_frame(Vulkan::ComputeFirstDraw::Strip16);
+            const double tessellation = per_frame(Vulkan::ComputeFirstDraw::Tessellation);
+            const double fans = per_frame(Vulkan::ComputeFirstDraw::Fan);
+            std::printf("Compute-first draws: %.1f/frame (list restart %.1f, 16-bit strips %.1f, "
+                        "tessellation %.1f, fans %.1f)\n",
+                        list_restart + strips + tessellation + fans, list_restart, strips,
+                        tessellation, fans);
+#endif
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
                 std::vector<double> sorted = intervals;

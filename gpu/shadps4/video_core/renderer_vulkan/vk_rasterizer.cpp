@@ -15,6 +15,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_compute_first_draw.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -3413,6 +3414,16 @@ void Rasterizer::UpdatePrimitiveState(const bool is_indexed) const {
     ASSERT_MSG(!is_indexed || !prim_restart || regs.primitive_restart_index == 0xFFFF ||
                    regs.primitive_restart_index == 0xFFFFFFFF,
                "Primitive restart index other than -1 is not supported yet");
+#ifdef __APPLE__
+    if (BbStats::enabled) {
+        const bool index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
+        const auto kind =
+            ClassifyComputeFirstDraw(regs.primitive_type, is_indexed, prim_restart, index16);
+        if (kind != ComputeFirstDraw::None) {
+            compute_first_draws[static_cast<size_t>(kind)].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+#endif
 
     const auto cull_mode = LiverpoolToVK::IsPrimitiveCulled(regs.primitive_type)
                                ? LiverpoolToVK::CullMode(regs.polygon_control.CullingMode())
