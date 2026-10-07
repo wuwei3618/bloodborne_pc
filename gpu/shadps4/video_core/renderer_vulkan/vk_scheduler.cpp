@@ -175,20 +175,25 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
 
     if (!recorder_thread.joinable()) {
         current_cmdbuf.beginRendering(rendering_info);
-        return;
+    } else {
+        // The attachment infos live on this stack frame: the recorded closure keeps copies.
+        Record([info = rendering_info, color_attachments, depth_attachment,
+                stencil_attachment](vk::CommandBuffer cmdbuf) mutable {
+            info.pColorAttachments = color_attachments.data();
+            if (info.pDepthAttachment) {
+                info.pDepthAttachment = &depth_attachment;
+            }
+            if (info.pStencilAttachment) {
+                info.pStencilAttachment = &stencil_attachment;
+            }
+            cmdbuf.beginRendering(info);
+        });
     }
-    // The attachment infos live on this stack frame: the recorded closure keeps copies.
-    Record([info = rendering_info, color_attachments, depth_attachment,
-            stencil_attachment](vk::CommandBuffer cmdbuf) mutable {
-        info.pColorAttachments = color_attachments.data();
-        if (info.pDepthAttachment) {
-            info.pDepthAttachment = &depth_attachment;
-        }
-        if (info.pStencilAttachment) {
-            info.pStencilAttachment = &stencil_attachment;
-        }
-        cmdbuf.beginRendering(info);
-    });
+    if (auto* profiler = GpuProfiler::Get()) {
+        profiler->PassBegin(this, render_state.width, render_state.height,
+                            render_state.num_color_attachments > 0 || db.has_depth ||
+                                db.has_stencil);
+    }
 }
 
 #ifdef __APPLE__
@@ -203,6 +208,9 @@ void Scheduler::EndRendering() {
     // The GPU library keeps frame pointers (gpu/CMakeLists.txt), so one more level is safe.
     last_end_callers = {__builtin_return_address(0), __builtin_return_address(1)};
 #endif
+    if (auto* profiler = GpuProfiler::Get()) {
+        profiler->PassEnd(this);
+    }
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
 }
 

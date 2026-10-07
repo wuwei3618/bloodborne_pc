@@ -3542,7 +3542,7 @@ void Rasterizer::MarkPass(const GraphicsPipeline* pipeline, const RenderState& s
                             : 0;
     }
     const u64 key = XXH3_64bits(parts.data(), sizeof(parts));
-    profiler->Mark(key, [&] {
+    profiler->LabelPass(key, [&] {
         std::string targets;
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
             targets += cb_descs[cb].first
