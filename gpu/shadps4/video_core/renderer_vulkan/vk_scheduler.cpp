@@ -10,6 +10,7 @@
 #include <functional>
 #ifdef __APPLE__
 #include <cxxabi.h>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -61,17 +62,36 @@ Scheduler::~Scheduler() {
 #ifdef __APPLE__
 namespace {
 std::mutex pass_split_mutex;
-std::unordered_map<void*, u64> pass_split_callers; ///< EndRendering() caller of resumed passes
+/// EndRendering() caller of resumed passes, and its caller.
+std::map<std::pair<void*, void*>, u64> pass_split_callers;
+
+/// "function+0xoffset" for a code address in a loaded image.
+std::string CodeName(void* address) {
+    Dl_info info{};
+    if (!address || !dladdr(address, &info) || !info.dli_sname) {
+        return "?";
+    }
+    int status = 0;
+    char* demangled = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
+    std::string name = demangled ? demangled : info.dli_sname;
+    std::free(demangled);
+    name = name.substr(0, name.find('(')); // the function, without its parameters
+    char offset[32];
+    std::snprintf(offset, sizeof(offset), "+0x%lx",
+                  static_cast<unsigned long>(reinterpret_cast<uintptr_t>(address) -
+                                             reinterpret_cast<uintptr_t>(info.dli_saddr)));
+    return name + offset;
+}
 } // namespace
 
 void Scheduler::PrintPassStats(u64 frames) {
     const u64 begun = passes_begun.exchange(0);
     const u64 resumed = passes_resumed.exchange(0);
-    std::vector<std::pair<u64, void*>> top;
+    std::vector<std::pair<u64, std::pair<void*, void*>>> top;
     {
         std::scoped_lock lk{pass_split_mutex};
-        for (const auto& [caller, count] : pass_split_callers) {
-            top.emplace_back(count, caller);
+        for (const auto& [callers, count] : pass_split_callers) {
+            top.emplace_back(count, callers);
         }
         pass_split_callers.clear();
     }
@@ -80,22 +100,10 @@ void Scheduler::PrintPassStats(u64 frames) {
     }
     std::ranges::sort(top, std::greater{});
     std::string callers;
-    for (size_t i = 0; i < std::min<size_t>(top.size(), 6); ++i) {
-        Dl_info info{};
-        dladdr(top[i].second, &info);
-        int status = 0;
-        char* demangled = info.dli_sname
-                              ? abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status)
-                              : nullptr;
-        std::string name = demangled ? demangled : (info.dli_sname ? info.dli_sname : "?");
-        std::free(demangled);
-        name = name.substr(0, name.find('(')); // the function, without its parameters
-        char entry[256];
-        std::snprintf(entry, sizeof(entry), "; %.1f/frame %s+0x%lx",
-                      double(top[i].first) / frames, name.c_str(),
-                      static_cast<unsigned long>(reinterpret_cast<uintptr_t>(top[i].second) -
-                                                 reinterpret_cast<uintptr_t>(info.dli_saddr)));
-        callers += entry;
+    for (size_t i = 0; i < std::min<size_t>(top.size(), 8); ++i) {
+        char count[32];
+        std::snprintf(count, sizeof(count), "; %.1f/frame ", double(top[i].first) / frames);
+        callers += count + CodeName(top[i].second.first) + " <- " + CodeName(top[i].second.second);
     }
     std::printf("Render passes: %.1f/frame, %.1f resume the attachments of the pass just "
                 "ended%s\n",
@@ -113,7 +121,7 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         if (!is_rendering && render_state == new_state) {
             passes_resumed.fetch_add(1, std::memory_order_relaxed);
             std::scoped_lock lk{pass_split_mutex};
-            ++pass_split_callers[last_end_caller];
+            ++pass_split_callers[last_end_callers];
         }
     }
 #endif
@@ -192,7 +200,8 @@ void Scheduler::EndRendering() {
     }
     is_rendering = false;
 #ifdef __APPLE__
-    last_end_caller = __builtin_return_address(0);
+    // The GPU library keeps frame pointers (gpu/CMakeLists.txt), so one more level is safe.
+    last_end_callers = {__builtin_return_address(0), __builtin_return_address(1)};
 #endif
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
 }

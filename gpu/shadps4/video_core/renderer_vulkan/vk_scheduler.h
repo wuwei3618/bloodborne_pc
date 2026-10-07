@@ -912,7 +912,8 @@ private:
     RenderState render_state;
     bool is_rendering = false;
 #ifdef __APPLE__
-    void* last_end_caller = nullptr; ///< who called EndRendering() last (PrintPassStats)
+    /// Who called EndRendering() last, and its caller (PrintPassStats).
+    std::pair<void*, void*> last_end_callers{};
 #endif
     // bbport: threaded recording
     std::unique_ptr<RecordChunk> record_chunk;

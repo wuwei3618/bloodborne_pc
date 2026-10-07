@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <bit>
+#include <cstdio>
 #include <cstdlib>
 #include <magic_enum/magic_enum.hpp>
 #include "bbport_copy.h"
@@ -284,6 +285,21 @@ void PrintBufferStats() {
 }
 } // namespace
 
+u64 BufferCache::StreamThreshold() {
+    // bbport: BB_STREAM_THRESHOLD streams larger read-only ranges too. An upload into an arena
+    // inside a render pass ends the pass, which on a Mac stores and loads its attachments again.
+    static const u64 threshold = [] {
+        const char* env = std::getenv("BB_STREAM_THRESHOLD");
+        const u64 value = env ? std::strtoull(env, nullptr, 0) : 0;
+        if (value > STREAM_THRESHOLD) {
+            std::printf("Buffer cache: read-only ranges up to %llu bytes are streamed\n",
+                        static_cast<unsigned long long>(value));
+        }
+        return std::max<u64>(STREAM_THRESHOLD, value);
+    }();
+    return threshold;
+}
+
 std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 size,
                                                         bool is_written, bool is_texel_buffer) {
     const bool stats = BufferStatsEnabled();
@@ -292,7 +308,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
         NoteHotUse(device_addr, size);
     }
     // For read-only buffers use device local stream buffer to reduce renderpass breaks.
-    if (!is_written && size <= STREAM_THRESHOLD && !IsRegionGpuModified(device_addr, size)) {
+    if (!is_written && size <= StreamThreshold() && !IsRegionGpuModified(device_addr, size)) {
         if (stats) {
             auto& region = Stats().regions[RegionKey(device_addr)];
             ++region.stream_count;
