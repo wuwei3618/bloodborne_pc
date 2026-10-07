@@ -144,9 +144,22 @@ Dream.
 - Frame time at that spot with 4K output and FSR 3.1 Performance: 36.8 ms (27.2 FPS) before;
   2.8 ms less with restart on for the strips, 2.6 ms less again without object motion vectors
   (31.4 ms, 31.8 FPS, the macOS defaults now). FSR 3.1 itself took 4.5 ms of the frame.
-- `BB_GPU_PROFILE=1` gives no usable numbers on KosmicKrisp: timestamps written outside a
-  render pass read back as 0, and each one adds a compute dispatch and a resolve, which halves
-  the frame rate.
+- `BB_GPU_PROFILE=1` times only render passes on macOS, with a timestamp after each pass begins
+  and one before it ends: KosmicKrisp reads timestamps written outside a render pass back as
+  0 and adds a compute dispatch for each. It prints GPU time per frame by pass, the total in
+  passes and the span from the first pass start to the last pass end; the resolves it adds
+  fall between passes, so the span is too long and the frame rate lower while it runs.
+- `BB_FRAME_STATS=1` also prints the render passes per frame, how many of them resume the
+  attachments of the pass just ended (a pass ended for a copy or a dispatch and begun again),
+  and the code that ended those passes. Each render pass costs about 0.12 ms even when tiny:
+  36 depth-only passes of 256x256 down to 32x32 (probably shadows of dynamic lights) took
+  4.5 ms per frame at one spot.
+- At a lamp with 1,900 draws per frame, with 4K output and Quality (scene 2560x1440), a frame
+  took 46.7 ms (21.4 FPS): 27 ms in about 290 render passes, about 20 ms between them (FSR 3.1,
+  the game's compute shaders, and the compute work KosmicKrisp adds before 82 tessellated draws
+  and 50 rect lists per frame). One HDR pass was split into about 25 segments (7.2 ms per
+  frame) by the copy shader's copies, and the G-buffer pass into about 12, mostly by uploads of
+  frame data that the game writes on the CPU.
 - MoltenVK cannot replace KosmicKrisp: it lacks `robustBufferAccess2` and `nullDescriptor`,
   which the renderer requires, and geometry shaders and logic operations, among others. Apple's
   Game Porting Toolkit translates Direct3D, not Vulkan.
