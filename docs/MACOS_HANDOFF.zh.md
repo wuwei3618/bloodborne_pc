@@ -4,8 +4,9 @@
 从 2026-10-06 起，真机测试和修改由 Mac 本地会话负责。用户的 Mac：M5 Pro，macOS 27.2。
 
 现状（2026-10-07）：游戏已经在这台 Mac 上运行起来。用 CI 的预编译包可以启动游戏、播放影片、创建角色、
-进入第一个区域，DualSense 手柄可用。菜单 60 到 120 FPS，复杂场景约 25 到 40 FPS，瓶颈是 Rosetta 2 下的
-GPU 命令线程。真机测试中发现的问题和处理结果见第 5 节第 10 至 18 条和第 6.1 节，没做完的事见第 9 节。
+进入第一个区域，DualSense 手柄和 FSR 3.1 都可用。菜单 60 到 120 FPS，第一个区域约 25 到 40 FPS；游戏场景里
+GPU 命令线程约三分之二的时间在等 GPU 执行完已提交的工作（第 5 节第 21 条）。真机测试中发现的问题和处理结果见
+第 5 节第 10 至 21 条和第 6.1 节，没做完的事见第 9 节。
 
 ## 0. 开工清单
 
@@ -29,7 +30,7 @@ GPU 命令线程。真机测试中发现的问题和处理结果见第 5 节第 
   - **Apple silicon (x86_64 under Rosetta 2)**（`macos-26`，机器上**没有**任何 x86_64 库）：下载两个
     产物，在 Rosetta 下跑运行时 / GPU 库 / Python 测试，启动包里的 `bin/bb-probe`，再用包里的
     KosmicKrisp 跑 `--vulkan-only`（虚拟机没有能用的 GPU，预期返回 -3；真机应打印 GPU 名和 PASS）。
-- 最新绿色构建：第 16 轮，https://github.com/wuwei3618/bloodborne_pc/actions/runs/37467304654
+- 最新绿色构建：第 18 轮，https://github.com/wuwei3618/bloodborne_pc/actions/runs/37550796029
 - Linux：到 `c9df91f` 为止，所有 macOS 代码都在 `__APPLE__` 分支或 `src/platform.h` 里，每轮改动都在 Linux
   （nix-shell）上运行过 `build.sh --test` 和 82 项 Python 测试。`8d2768f`、`7fb005a`、`d9ae010` 改的是
   Linux 和 macOS 共用的代码（`gpu/shim/core/libraries/kernel/threads.h`、`liverpool.cpp`、`gnmdriver.cpp`），
@@ -191,8 +192,9 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
     很小的主机可见显存。KosmicKrisp 只有一种显存类型（`DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED`），
     第一个图像就找不到显存，返回 `FFX_ERROR_BACKEND_API_ERROR`。处理：`gpu/patches/fsr-vulkan/0002`，没有
     “只在设备本地”的类型时使用主机可见的那一种；测试 `fsr3-memory-type-test`。在本机用 FSR-Vulkan 自带的两个冒烟测试
-    验证过（上下文创建、两帧超分辨率、帧生成、读回结果都通过，见第 7 节），游戏里还没验证。TAA 路径不创建 FSR 3
-    上下文，还没在 Mac 上测过。排查方法：写一个程序按游戏的参数调用 `ffxVkPortableUpscaleContextCreate`，传入自己的
+    验证过（上下文创建、两帧超分辨率、帧生成、读回结果都通过，见第 7 节）。游戏里也验证过：1080p 原生抗锯齿、
+    4K 输出加 Quality、4K 输出加 Performance 三种设置都能创建上下文，画面没有异常，帧率见第 6.1 节。TAA 路径不创建
+    FSR 3 上下文，还没在 Mac 上测过。排查方法：写一个程序按游戏的参数调用 `ffxVkPortableUpscaleContextCreate`，传入自己的
     `getDeviceProcAddr`，包装 FSR 库取到的 Vulkan 函数，打印失败的调用。这次只看到一次 `vkCreateImage`，之后没有
     `vkAllocateMemory`，由此定位到选显存类型的函数。
 18. 帧率预设和帧间隔：`BB_FPS=60` 时模拟的垂直同步是 60 Hz，画好的帧要等到下一个 16.7 毫秒的时刻才显示；
@@ -200,7 +202,29 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
     （GPU 命令线程空闲 0.1%），60 帧预设下帧间隔在 16.7 和 33.3 毫秒之间交替，日志里每 5 秒的最慢一帧都正好是
     33.3 毫秒。用户反馈 60 帧的观感比不锁帧差很多。不锁帧时一帧画完约 2 毫秒内显示，间隔均匀（不锁帧的游戏场景
     帧统计还没记录过）。因此 macOS 的默认帧率保持 `uncap`，和 Linux 相同。`gpu/shim/core/emulator_settings.h`
-    的注释记录了 Linux 上的同一现象（100 Hz 显示器上 10 和 20 毫秒交替）。
+    的注释记录了 Linux 上的同一现象（100 Hz 显示器上 10 和 20 毫秒交替）。用户在 60 帧模式下没有注意到动作变慢。
+    `run.sh` 的注释说 60/90 帧补丁按固定步长推进；如果每帧固定推进 1/60 秒，36 FPS 时游戏只有正常速度的 60%，
+    和用户的感觉不一致，还没查（另见第 19 条）。
+19. 帧率过低时游戏变慢：4K 输出加 Quality 时游戏场景只有 19 到 25 FPS（每帧 40 到 53 毫秒），用户看到动作明显变慢；
+    4K 输出加 Performance 时是 26 到 33 FPS（每帧 30 到 38 毫秒），用户觉得不慢；60 帧模式下帧间隔不超过 33.3 毫秒，
+    用户也没注意到变慢。推测游戏或不锁帧补丁给每帧推进的时间设了上限，大约在 33 到 40 毫秒之间，还没在代码里找到。
+    已查过的部分：游戏的帧计时函数在游戏偏移 `0x2034770`（补丁地址减 `0x400000`），对象里 `+0x18` 是目标帧时间
+    （`0x3d088889` 即 1/30 秒，`0x3c888889` 即 1/60 秒），`+0x264` 是上一帧用时（秒），`+0x2b8` 是最近 16 帧的平均帧率。
+    这个函数只休眠到目标帧时间并记录用时，没有截断。游戏代码里有 21 处从 `+0x264` 读取浮点数，上限如果存在，
+    应该在其中某处的后面。
+20. 管线缓存和渲染分辨率：换输出分辨率或档位后渲染尺寸变了，需要一批新管线（4K 加 Quality 第一次进游戏时编译了
+    107 个，之后又有 29 个；4K 加 Performance 约 170 个），所以每种新设置第一次玩时卡顿更多，以后启动时会预热。
+    另外，启动时有 93 个缓存的管线没有预热（`93 stale pipelines were found`，其中只有 1 个打印了
+    `conflicts with index`）；那次运行在标题画面和读档时改写了缓存里原有的 274 个文件，说明其中一部分管线在运行时
+    又编译了一次。原因还没查，判定逻辑在 `vk_pipeline_serialization.cpp` 的 `LoadPipelineStage` 和 `WarmUp`。
+21. 性能瓶颈的更正：之前认为游戏场景的瓶颈是 Rosetta 下 GPU 命令线程自身的工作，这个判断不对。帧统计里
+    `blocked: ... GPU ticks` 是这个线程在 `Scheduler::Wait`（`vk_scheduler.cpp`）里等时间线信号量的时间占比，
+    也就是等 GPU 执行完已提交工作的时间。游戏场景里各负载段的中位数：60 帧那一轮（没有 FSR 3）62% 到 68%，
+    1080p 加 FSR 3 原生抗锯齿 64% 到 73%，4K 加 Quality 68% 到 73%，4K 加 Performance 67% 到 77%。锁 30 帧时
+    只有约 3%，因为每帧都有空余时间。也就是说，这个线程约三分之一的时间在做自己的工作，其余时间在等 GPU。
+    提高渲染分辨率会让帧率下降（第 6.1 节），说明等待时间和 GPU 的工作量有关。还不清楚 GPU 本身是否满负荷：
+    游戏运行时可以用 `ioreg -r -d 1 -w 0 -c IOAccelerator` 读 `Device Utilization %`（不需要 sudo，约每秒更新）。
+    利用率不高，说明时间主要花在提交和等待的往返上；接近 100%，说明是 GPU 执行本身慢。
 
 ## 6. 第一次真机运行：预期日志和最可能出问题的地方
 
@@ -242,13 +266,27 @@ Mapped ... bytes, ... segments; applied ... relocations
   共 2.9 秒。
 - FSR-Vulkan 冒烟测试（第 5 节第 17 条修复后）：`ffx_vk_fsr3_portable_api_smoke` 和 `ffx_vk_fsr3_backend_smoke`
   在 KosmicKrisp 上都通过，两条路径的输出哈希相同（`493bb5c5c0f207a5`）。
+- FSR 3.1 和输出分辨率（`fsr3.log`、`fsr3-4k.log`、`fsr3-4k-perf.log`，第一个区域，不锁帧，按每帧绘制次数分段，
+  取没有编译管线的统计段的帧率中位数）：
+
+  | 设置 | 400 到 750 次 | 850 到 1,100 次 | 1,100 到 1,350 次 | 1,350 到 1,700 次 |
+  |---|---|---|---|---|
+  | 1080p，FSR 3.1 原生抗锯齿 | 37.0 | 31.8 | 29.8 | 27.6 |
+  | 4K 输出，Performance（场景 1916×1078） | 30.9 | 29.5 | 28.4 | 26.7 |
+  | 4K 输出，Quality（场景 2560×1440） | 没有数据 | 27.1 | 24.7 | 22.5 |
+
+  用户的感觉：4K 加 Quality 比 1080p 清楚一点，但动作变慢（第 5 节第 19 条）；4K 加 Performance 比 1080p 清楚一些，
+  速度正常。在 Retina 屏上看重清晰度可以用 `output_res=3840x2160` 和 `preset=3`。
 
 ## 7. 调试手段
 
 - `BB_TIMEOUT=60`：60 秒后看门狗打印所有线程（判断是不是卡死）。macOS 上转储可能中断，见第 5 节第 15 条。
 - `sample <pid> 3 -file out.txt`：采样正在运行的游戏 3 秒，得到所有线程的调用栈，包括游戏代码地址
   （游戏镜像从 `0x800000000` 开始），不需要开发者模式。卡住、空转时首选这个。
-- `BB_FRAME_STATS=1`：每 5 秒打印帧率、最慢一帧、着色器编译次数和耗时、GPU 命令线程空闲比例。
+- `BB_FRAME_STATS=1`：每 5 秒打印帧率、最慢一帧、着色器编译次数和耗时、GPU 命令线程的空闲比例和它等待 GPU 的
+  比例（`GPU ticks`），以及帧间隔的中位数、标准差和 p99。
+- GPU 利用率：`ioreg -r -d 1 -w 0 -c IOAccelerator | grep -o '"Device Utilization %"=[0-9]*'`，约每秒更新一次，
+  不需要 sudo。
 - `BB_PM4_CHECK=1`：报告提交之后被改写的命令缓冲和无法解析的命令包（第 5 节第 12 条）。
 - 不开游戏检查 FSR 3：在暂存目录里按 x86_64 编译 FSR-Vulkan，
   `cmake -S gpu/third_party/fsr-vulkan -B <目录> -DCMAKE_OSX_ARCHITECTURES=x86_64 -DVulkan_INCLUDE_DIR=/opt/homebrew/include -DVulkan_LIBRARY=<包>/bin/lib/libvulkan.1.dylib -DFFX_VK_PORTABLE_BUILD_FSR4_V07_VULKAN=OFF`，
@@ -285,17 +323,22 @@ Mapped ... bytes, ... segments; applied ... relocations
 
 ## 9. 没做完的事
 
-1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`），然后再考虑合并。
-2. FSR 3.1：原因已找到并修复（第 5 节第 17 条），还要在游戏里验证画面和帧率；顺便测 TAA。
+1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`）和 FSR 3 显存类型的补丁（`78fd0e3`，包括新测试
+   `fsr3-memory-type-test`），然后再考虑合并。
+2. FSR 3.1：已修复并在游戏里验证（第 5 节第 17 条、第 6.1 节）；还没测 TAA。
 3. 帧率补丁下角色创建界面不显示模型（第 5 节第 13 条）：可以逐步去掉补丁行，找出是哪几行。
    `60 FPS++` 和 `Uncap FPS++` 有 37 行相同的改动，其中 30 行在 `30 FPS++` 里也有。
-4. 复杂场景性能：GPU 命令线程在 Rosetta 下是瓶颈（第 6.1 节）。
-5. 60 帧预设在达不到 60 帧的机器上帧间隔不均匀（第 5 节第 18 条）。可以考虑让 60 帧预设也用 480 Hz 垂直同步，
+4. 游戏场景的性能：GPU 命令线程约三分之二的时间在等 GPU（第 5 节第 21 条）。下一步在游戏运行时读 GPU 利用率，
+   分清是 GPU 执行慢，还是提交和等待的往返多。
+5. 帧率过低时游戏变慢（第 5 节第 19 条）：找出给每帧推进时间设上限的代码，确认分界线。
+6. 缓存里有一部分管线每次启动都没有预热（第 5 节第 20 条）。
+7. Retina 屏的 Mac 是否默认使用 4K 输出加 Performance（第 6.1 节），需要维护者决定。
+8. 60 帧预设在达不到 60 帧的机器上帧间隔不均匀（第 5 节第 18 条）。可以考虑让 60 帧预设也用 480 Hz 垂直同步，
    由显示线程限制在 60 帧（`BB_VBLANK_HZ=0 BB_FPS_LIMIT=60`）。要先确认 `60 FPS++` 补丁在这种设置下游戏速度正常，
    而且这会同时改变 Linux 的行为。
-6. 看门狗转储在 macOS 上中断（第 5 节第 15 条）：可以改用 Mach 的 `thread_get_state` 读取各线程状态，不发信号。
-7. 本地用 Xcode/CLT 27 完整编译还没试过。GTK 启动器没移植（Mac 上用 `bbport.ini` 和游戏内菜单）。FSR 4 不可用。
-8. 可以考虑自己从 Mesa 编译 x86_64 KosmicKrisp（shadPS4 用的是 `shadexternals/mesa-kosmickrisp`），不再借 shadPS4 的二进制。
-9. 长期：Rosetta 在 macOS 28 之后只保留部分功能，Homebrew 2027 年 9 月移除 Intel 支持，
-   长远要么做 arm64 原生版（工作量很大），要么像 shadPS4 那样把依赖都并入项目自己编译。
-10. 可以补一个 Linux CI 任务（在 nix-shell 里运行 `build.sh --test` 和 Python 测试），这样改 macOS 时 Linux 的回归也能自动发现。
+9. 看门狗转储在 macOS 上中断（第 5 节第 15 条）：可以改用 Mach 的 `thread_get_state` 读取各线程状态，不发信号。
+10. 本地用 Xcode/CLT 27 完整编译还没试过。GTK 启动器没移植（Mac 上用 `bbport.ini` 和游戏内菜单）。FSR 4 不可用。
+11. 可以考虑自己从 Mesa 编译 x86_64 KosmicKrisp（shadPS4 用的是 `shadexternals/mesa-kosmickrisp`），不再借 shadPS4 的二进制。
+12. 长期：Rosetta 在 macOS 28 之后只保留部分功能，Homebrew 2027 年 9 月移除 Intel 支持，
+    长远要么做 arm64 原生版（工作量很大），要么像 shadPS4 那样把依赖都并入项目自己编译。
+13. 可以补一个 Linux CI 任务（在 nix-shell 里运行 `build.sh --test` 和 Python 测试），这样改 macOS 时 Linux 的回归也能自动发现。

@@ -13,9 +13,9 @@ guest memory, locks, semaphores, files), the GPU library parts that need no GPU,
 on small synthetic x86-64 images; the package's KosmicKrisp loads there too (the runner's
 virtual GPU cannot run it). The game has run on a Mac (M5 Pro, macOS 27.2, October 2026, the
 CI package of `macos-port`): it starts, plays its movies, and the character creator, the
-opening and the first area work, with a DualSense. Menus run at 60 to 120 FPS, heavy scenes at
-about 25 to 40 FPS: under Rosetta 2 the GPU command thread is the limit there. See
-[Known issues](#known-issues); reports (logs, see the end) are still welcome.
+opening and the first area work, with a DualSense. Menus run at 60 to 120 FPS, the first area
+at about 25 to 40 FPS, where the GPU command thread spends about two thirds of its time waiting
+for the GPU. See [Known issues](#known-issues); reports (logs, see the end) are still welcome.
 
 ## Requirements
 
@@ -88,7 +88,9 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
 - The first time an area, an effect or a menu appears, its shaders and pipelines are compiled;
   on a Mac one pipeline can take up to about 2 s, so new areas stutter at first. KosmicKrisp
   keeps no disk cache of its own: the port saves the pipelines it used (`user/cache`) and
-  compiles them again at the next start, before the title screen (about 15 s for 700).
+  compiles them again at the next start, before the title screen (about 15 s for 700). Each new
+  render size (another output resolution or preset) needs its own pipelines, so the first run
+  with new settings stutters more.
 - With a frame rate patch (`BB_FPS=60`, or `uncap`, the default) the character creator shows no
   character model; with `BB_FPS=30` (the game's own 30 FPS, no patch) it does. In the game
   itself models are shown with every preset. To see the model while creating a character,
@@ -97,10 +99,18 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   emulated 60 Hz vblank, so frames are shown for 16.7 or 33.3 ms in turn, which looks less
   smooth than `uncap` (the default) at the same frame rate: there vblank runs at 480 Hz and a
   frame is shown about 2 ms after it is finished. Use `uncap` on a Mac.
-- FSR 3.1 did not start on KosmicKrisp (`Upscaler: FSR 3 context creation failed` in the log):
-  its Vulkan backend looked for device-local memory that is not host-visible, which unified
-  memory does not have. Packages built from October 7, 2026 on include the fix; FSR 3.1 passes
-  its own tests on a Mac but has not been checked in the game yet. TAA is untested on a Mac.
+- FSR 3.1 works on KosmicKrisp in packages built from October 7, 2026 on; before, its Vulkan
+  backend found no memory type for its images on unified memory and did not start. TAA is
+  untested on a Mac.
+- On a Retina display the default 1080p output looks soft. `output_res=3840x2160` and
+  `preset=3` in `bbport.ini` (Performance: the scene renders at about 1080p and FSR 3.1 fills
+  4K) look sharper at a slightly lower frame rate. Median frame rates in the first area with
+  an M5 Pro, from light to heavy scenes: 1080p with FSR 3.1 native AA 37, 32, 30 and 28 FPS;
+  4K output with Performance 31, 29.5, 28.5 and 27 FPS; with Quality (scene 2560x1440) 27, 25
+  and 22.5 FPS in the three heavier groups, which is too slow (next item).
+- Well below 30 FPS the game runs slower than real time: at 19 to 25 FPS (4K output with
+  Quality) movement was visibly slowed, at 26 to 33 FPS (4K output with Performance) it was
+  not.
 
 ## Differences from Linux
 
