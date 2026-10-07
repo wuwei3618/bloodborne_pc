@@ -93,13 +93,18 @@ manifest. KosmicKrisp can also be built for x86_64 from Mesa, as shadPS4 does wi
   character model; with `BB_FPS=30` (the game's own 30 FPS, no patch) it does. In the game
   itself models are shown with every preset. To see the model while creating a character,
   start with `BB_FPS=30`, and restart with your preset afterwards.
-- FSR 3.1 does not start on KosmicKrisp yet (`Upscaler: FSR 3 context creation failed` in the
-  log); the game is then shown without the port's upscaler. TAA is untested on a Mac.
+- Gameplay runs at about 25 to 40 FPS (M5 Pro). With `BB_FPS=60` every frame waits for the
+  emulated 60 Hz vblank, so frames are shown for 16.7 or 33.3 ms in turn, which looks less
+  smooth than `uncap` (the default) at the same frame rate: there vblank runs at 480 Hz and a
+  frame is shown about 2 ms after it is finished. Use `uncap` on a Mac.
+- FSR 3.1 did not start on KosmicKrisp (`Upscaler: FSR 3 context creation failed` in the log):
+  its Vulkan backend looked for device-local memory that is not host-visible, which unified
+  memory does not have. Packages built from October 7, 2026 on include the fix; FSR 3.1 passes
+  its own tests on a Mac but has not been checked in the game yet. TAA is untested on a Mac.
 
 ## Differences from Linux
 
-- FSR 4 and FSR 4.1.1 need AMD-specific Vulkan features and fall back to FSR 3.1, which does
-  not start on KosmicKrisp yet (see above).
+- FSR 4 and FSR 4.1.1 need AMD-specific Vulkan features and fall back to FSR 3.1 (see above).
 - Guest memory uses POSIX shared memory and a reservation of the guest address range at start;
   host objects the game can see come from an allocator below 1 TiB (`src/runtime_heap.c`).
   Under Rosetta 2 the system already uses 63–64 GiB (the commpage) and 64–448 GiB, so the

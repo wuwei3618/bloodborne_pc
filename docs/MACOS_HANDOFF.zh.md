@@ -5,7 +5,7 @@
 
 现状（2026-10-07）：游戏已经在这台 Mac 上运行起来。用 CI 的预编译包可以启动游戏、播放影片、创建角色、
 进入第一个区域，DualSense 手柄可用。菜单 60 到 120 FPS，复杂场景约 25 到 40 FPS，瓶颈是 Rosetta 2 下的
-GPU 命令线程。真机测试中发现的问题和处理结果见第 5 节第 10 至 17 条和第 6.1 节，没做完的事见第 9 节。
+GPU 命令线程。真机测试中发现的问题和处理结果见第 5 节第 10 至 18 条和第 6.1 节，没做完的事见第 9 节。
 
 ## 0. 开工清单
 
@@ -18,9 +18,10 @@ GPU 命令线程。真机测试中发现的问题和处理结果见第 5 节第 
 
 ## 1. 当前状态
 
-- 提交：`0c62f20` … `d9ae010`（`git log 5224a6d..macos-port`），全部在 `macos-port`，未合并到 main。
+- 提交：从 `0c62f20` 起（`git log 5224a6d..macos-port`），全部在 `macos-port`，未合并到 main。
   真机测试期间的提交：`1c23636`（窗口放到主线程）、`8d2768f`（影片停止时的线程等待）、
-  `7fb005a`（`BB_PM4_CHECK` 诊断）、`d9ae010`（提交节流的空闲信号）。
+  `7fb005a`（`BB_PM4_CHECK` 诊断）、`d9ae010`（提交节流的空闲信号），以及 FSR 3 显存类型的修复
+  （第 5 节第 17 条）。
 - CI：`.github/workflows/macos.yml`，每次推送跑两个任务（约 15 分钟）：
   - **Intel (x86_64)**（`macos-15-intel`）：x86_64 Homebrew 装依赖 → `build.sh --test` → GPU 库测试 →
     Python 测试 → `packaging/macos_package.sh --tests` → 上传产物 `bbport-macos-x86_64`（用户包，
@@ -32,7 +33,9 @@ GPU 命令线程。真机测试中发现的问题和处理结果见第 5 节第 
 - Linux：到 `c9df91f` 为止，所有 macOS 代码都在 `__APPLE__` 分支或 `src/platform.h` 里，每轮改动都在 Linux
   （nix-shell）上运行过 `build.sh --test` 和 82 项 Python 测试。`8d2768f`、`7fb005a`、`d9ae010` 改的是
   Linux 和 macOS 共用的代码（`gpu/shim/core/libraries/kernel/threads.h`、`liverpool.cpp`、`gnmdriver.cpp`），
-  还没在 Linux 上验证，合并前要补做。仓库没有 Linux CI。
+  还没在 Linux 上验证，合并前要补做。FSR 3 显存类型的补丁（`gpu/patches/fsr-vulkan/0002`）在 Linux 上也生效，
+  只在设备没有“只在设备本地”的显存类型时改变选择；新测试 `fsr3-memory-type-test` 也要在 Linux 上编译运行一次。
+  仓库没有 Linux CI。
 
 ## 2. 用户的环境与限制
 
@@ -88,8 +91,8 @@ arch -x86_64 /usr/local/bin/brew install cmake ninja pkgconf glslang vulkan-head
 
 ```bash
 BB_LTO=OFF bash build.sh --test            # 在 arm64 shell 里直接跑，它会自己切到 arch -x86_64 /bin/bash
-PATH=/usr/local/bin:$PATH ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test
-for t in motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test; do ./out/gpu/$t; done
+PATH=/usr/local/bin:$PATH ninja -C out/gpu motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test
+for t in motion-history-test ui-composition-test motion-shader-test hle-thread-test submission-gate-test fsr3-memory-type-test; do ./out/gpu/$t; done
 python3 -m unittest discover -s tests
 ```
 
@@ -131,7 +134,8 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
 | `gpu/shim/core/libraries/kernel/threads.h` | AvPlayer 用的线程封装：加锁，多个线程同时 join 时只由一个调用者真正 join，线程结束自己的对象时只在没人 join 时 detach |
 | `gpu/shim/bbport_submission_gate.h` + `gnmdriver.cpp` | 提交锁（`BbPort::SubmissionGate`）：设置和清除都在互斥锁内读取 GPU 当时的状态，GPU 还有提交时收到的空闲信号不清除提交锁 |
 | `liverpool.cpp` | `BB_PM4_CHECK=1`：提交时保存命令缓冲副本，处理开始时和解析出错时与内存比对 |
-| `tests/` | `test_runtime.c` 补了 macOS 没有的 `pthread_barrier`；GPU 测试桩改用 `__thread`；两个 Python 测试把临时目录解析成真实路径；`test_probe.py` 检查 SDL 视频子系统在主线程上启动；`test_hle_thread.cpp`、`test_submission_gate.cpp` |
+| `gpu/patches/fsr-vulkan/0002-*.patch` | FSR 3.1.4 的 Vulkan 后端（`ffx_vk.cpp` 的 `findMemoryTypeIndex`）：设备没有“只在设备本地”的显存类型时，使用“设备本地且主机可见”的类型 |
+| `tests/` | `test_runtime.c` 补了 macOS 没有的 `pthread_barrier`；GPU 测试桩改用 `__thread`；两个 Python 测试把临时目录解析成真实路径；`test_probe.py` 检查 SDL 视频子系统在主线程上启动；`test_hle_thread.cpp`、`test_submission_gate.cpp`、`test_fsr3_memory_type.cpp` |
 
 ## 5. 已经踩过的坑（关键事实）
 
@@ -182,7 +186,21 @@ bash packaging/macos_package.sh            # 可选：打出和 CI 一样的 dis
 16. KosmicKrisp 没有启用 Mesa 的磁盘着色器缓存。新管线首次编译最长约 2 秒，新区域会卡顿。bbport 把用过的管线
     存在 `user/cache`，下次启动时在标题画面之前重新编译（约 700 个管线多用约 15 秒）。
 17. FSR 3.1 在 KosmicKrisp 上创建上下文失败（`Upscaler: FSR 3 context creation failed`），之后本次运行不再使用
-    超分辨率，原因还没查。TAA 路径不创建 FSR 3 上下文，还没在 Mac 上测过。
+    超分辨率。设备功能和格式都满足 FSR 3 的要求。原因在 FidelityFX 1.1.4 的 Vulkan 后端：`ffx_vk.cpp` 的
+    `findMemoryTypeIndex` 为图像和缓冲区找“设备本地”显存时，跳过同时“主机可见”的类型，用来避免占用独立显卡上
+    很小的主机可见显存。KosmicKrisp 只有一种显存类型（`DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT | HOST_CACHED`），
+    第一个图像就找不到显存，返回 `FFX_ERROR_BACKEND_API_ERROR`。处理：`gpu/patches/fsr-vulkan/0002`，没有
+    “只在设备本地”的类型时使用主机可见的那一种；测试 `fsr3-memory-type-test`。在本机用 FSR-Vulkan 自带的两个冒烟测试
+    验证过（上下文创建、两帧超分辨率、帧生成、读回结果都通过，见第 7 节），游戏里还没验证。TAA 路径不创建 FSR 3
+    上下文，还没在 Mac 上测过。排查方法：写一个程序按游戏的参数调用 `ffxVkPortableUpscaleContextCreate`，传入自己的
+    `getDeviceProcAddr`，包装 FSR 库取到的 Vulkan 函数，打印失败的调用。这次只看到一次 `vkCreateImage`，之后没有
+    `vkAllocateMemory`，由此定位到选显存类型的函数。
+18. 帧率预设和帧间隔：`BB_FPS=60` 时模拟的垂直同步是 60 Hz，画好的帧要等到下一个 16.7 毫秒的时刻才显示；
+    `uncap`（默认）时是 480 Hz，再由显示线程限制在显示器刷新率（最多 120）。这台 Mac 在游戏场景里只有 23 到 38 FPS
+    （GPU 命令线程空闲 0.1%），60 帧预设下帧间隔在 16.7 和 33.3 毫秒之间交替，日志里每 5 秒的最慢一帧都正好是
+    33.3 毫秒。用户反馈 60 帧的观感比不锁帧差很多。不锁帧时一帧画完约 2 毫秒内显示，间隔均匀（不锁帧的游戏场景
+    帧统计还没记录过）。因此 macOS 的默认帧率保持 `uncap`，和 Linux 相同。`gpu/shim/core/emulator_settings.h`
+    的注释记录了 Linux 上的同一现象（100 Hz 显示器上 10 和 20 毫秒交替）。
 
 ## 6. 第一次真机运行：预期日志和最可能出问题的地方
 
@@ -212,13 +230,18 @@ Mapped ... bytes, ... segments; applied ... relocations
 - `bin/bb-probe --vulkan-only`：`Vulkan: Apple M5 Pro; command submission + 4096-byte readback PASS`。
   驱动报告 KosmicKrisp 26.2.99，Vulkan 1.4.363。
 - 上面的预期日志全部出现，`Thread pointer loads: 17127 read gs:[0x850]`，`Mapped 93538364 bytes, 6 segments; applied 237298 relocations`。
-- 第 1 至 5 条担心的问题都没有出现。出现过的问题见第 5 节第 10 至 17 条，都已处理或记录。
+- 第 1 至 5 条担心的问题都没有出现。出现过的问题见第 5 节第 10 至 18 条，都已处理或记录。
 - 窗口按显示器大小建成 1728x971（Retina），vblank 跟随显示器 120 Hz（`VideoOut: vblank 480 Hz, frame limit 120 FPS`）。
 - 音频走 CoreAudio，DualSense 由 SDL 识别，输入名字的对话框可以直接用键盘输入。
 - 驱动缺少的可选扩展和格式（`D16UnormS8Uint` 不能做深度模板附件、`R5G5B5A1` 完全不支持等）只有警告，
   暂时没有看到对应的画面问题。
 - 帧统计（`BB_FRAME_STATS=1`）：标题画面 120 FPS；角色创建界面不锁帧约 93 FPS（GPU 命令线程空闲 0.2%）、
   60 帧时空闲约 75%；第一个区域 30 帧时 GPU 命令线程空闲 18% 到 68%；过场动画（每帧约 1,400 次绘制）约 25 FPS。
+- 60 帧预设玩到游戏场景（`fps60.log`，149 段统计）：菜单和角色创建界面 60 FPS；游戏场景 23 到 38 FPS，每帧 770 到
+  1,900 次绘制，每次 20 到 31 微秒；新区域第一次出现时单帧最长停顿 1.5 秒，一个 5 秒的统计段里编译了 28 个管线，
+  共 2.9 秒。
+- FSR-Vulkan 冒烟测试（第 5 节第 17 条修复后）：`ffx_vk_fsr3_portable_api_smoke` 和 `ffx_vk_fsr3_backend_smoke`
+  在 KosmicKrisp 上都通过，两条路径的输出哈希相同（`493bb5c5c0f207a5`）。
 
 ## 7. 调试手段
 
@@ -227,6 +250,12 @@ Mapped ... bytes, ... segments; applied ... relocations
   （游戏镜像从 `0x800000000` 开始），不需要开发者模式。卡住、空转时首选这个。
 - `BB_FRAME_STATS=1`：每 5 秒打印帧率、最慢一帧、着色器编译次数和耗时、GPU 命令线程空闲比例。
 - `BB_PM4_CHECK=1`：报告提交之后被改写的命令缓冲和无法解析的命令包（第 5 节第 12 条）。
+- 不开游戏检查 FSR 3：在暂存目录里按 x86_64 编译 FSR-Vulkan，
+  `cmake -S gpu/third_party/fsr-vulkan -B <目录> -DCMAKE_OSX_ARCHITECTURES=x86_64 -DVulkan_INCLUDE_DIR=/opt/homebrew/include -DVulkan_LIBRARY=<包>/bin/lib/libvulkan.1.dylib -DFFX_VK_PORTABLE_BUILD_FSR4_V07_VULKAN=OFF`，
+  再 `make -C <目录> ffx_vk_fsr3_portable_api_smoke ffx_vk_fsr3_backend_smoke`，运行时设置
+  `VK_DRIVER_FILES=<包>/bin/vulkan/icd.d/kosmickrisp_mesa_icd.json` 和 `DYLD_LIBRARY_PATH=<包>/bin/lib`。
+  arm64 Homebrew 的 Vulkan 头文件可以直接用，库要用包里的 x86_64 版本。编译前先按 `build.sh` 的方式应用
+  `gpu/patches/fsr-vulkan` 里的补丁。
 - `BB_PAD_FILE=<文件>`：把按键名（`cross`、`down` 等）写进文件就按下，清空就松开，可以脚本化操作菜单。
   设置菜单打开时注入的按键会被忽略。
 - 游戏里的错误路径可以用外部补丁临时写入 `ud2`：在 `BB_PATCHES_DIR` 指向的目录里放一个 `isEnabled="true"` 的
@@ -257,11 +286,13 @@ Mapped ... bytes, ... segments; applied ... relocations
 ## 9. 没做完的事
 
 1. 在 Linux 上验证共用代码的改动（`8d2768f`、`7fb005a`、`d9ae010`），然后再考虑合并。
-2. FSR 3.1 在 KosmicKrisp 上创建上下文失败（第 5 节第 17 条）；顺便测 TAA。
+2. FSR 3.1：原因已找到并修复（第 5 节第 17 条），还要在游戏里验证画面和帧率；顺便测 TAA。
 3. 帧率补丁下角色创建界面不显示模型（第 5 节第 13 条）：可以逐步去掉补丁行，找出是哪几行。
    `60 FPS++` 和 `Uncap FPS++` 有 37 行相同的改动，其中 30 行在 `30 FPS++` 里也有。
 4. 复杂场景性能：GPU 命令线程在 Rosetta 下是瓶颈（第 6.1 节）。
-5. macOS 的默认帧率设置（目前和 Linux 一样是 `uncap`），等第 3 项有结果后再定。
+5. 60 帧预设在达不到 60 帧的机器上帧间隔不均匀（第 5 节第 18 条）。可以考虑让 60 帧预设也用 480 Hz 垂直同步，
+   由显示线程限制在 60 帧（`BB_VBLANK_HZ=0 BB_FPS_LIMIT=60`）。要先确认 `60 FPS++` 补丁在这种设置下游戏速度正常，
+   而且这会同时改变 Linux 的行为。
 6. 看门狗转储在 macOS 上中断（第 5 节第 15 条）：可以改用 Mach 的 `thread_get_state` 读取各线程状态，不发信号。
 7. 本地用 Xcode/CLT 27 完整编译还没试过。GTK 启动器没移植（Mac 上用 `bbport.ini` 和游戏内菜单）。FSR 4 不可用。
 8. 可以考虑自己从 Mesa 编译 x86_64 KosmicKrisp（shadPS4 用的是 `shadexternals/mesa-kosmickrisp`），不再借 shadPS4 的二进制。
