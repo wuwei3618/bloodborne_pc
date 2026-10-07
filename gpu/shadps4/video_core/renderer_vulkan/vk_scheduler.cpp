@@ -8,6 +8,12 @@
 #include <unordered_map>
 #include <dlfcn.h>
 #include <functional>
+#ifdef __APPLE__
+#include <cxxabi.h>
+#include <mutex>
+#include <string>
+#include <vector>
+#endif
 
 #include "bbport_copy.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
@@ -52,10 +58,65 @@ Scheduler::~Scheduler() {
 #endif
 }
 
+#ifdef __APPLE__
+namespace {
+std::mutex pass_split_mutex;
+std::unordered_map<void*, u64> pass_split_callers; ///< EndRendering() caller of resumed passes
+} // namespace
+
+void Scheduler::PrintPassStats(u64 frames) {
+    const u64 begun = passes_begun.exchange(0);
+    const u64 resumed = passes_resumed.exchange(0);
+    std::vector<std::pair<u64, void*>> top;
+    {
+        std::scoped_lock lk{pass_split_mutex};
+        for (const auto& [caller, count] : pass_split_callers) {
+            top.emplace_back(count, caller);
+        }
+        pass_split_callers.clear();
+    }
+    if (!frames) {
+        return;
+    }
+    std::ranges::sort(top, std::greater{});
+    std::string callers;
+    for (size_t i = 0; i < std::min<size_t>(top.size(), 6); ++i) {
+        Dl_info info{};
+        dladdr(top[i].second, &info);
+        int status = 0;
+        char* demangled = info.dli_sname
+                              ? abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status)
+                              : nullptr;
+        std::string name = demangled ? demangled : (info.dli_sname ? info.dli_sname : "?");
+        std::free(demangled);
+        name = name.substr(0, name.find('(')); // the function, without its parameters
+        char entry[256];
+        std::snprintf(entry, sizeof(entry), "; %.1f/frame %s+0x%lx",
+                      double(top[i].first) / frames, name.c_str(),
+                      static_cast<unsigned long>(reinterpret_cast<uintptr_t>(top[i].second) -
+                                                 reinterpret_cast<uintptr_t>(info.dli_saddr)));
+        callers += entry;
+    }
+    std::printf("Render passes: %.1f/frame, %.1f resume the attachments of the pass just "
+                "ended%s\n",
+                double(begun) / frames, double(resumed) / frames, callers.c_str());
+}
+#endif
+
 void Scheduler::BeginRendering(const RenderState& new_state) {
     if (is_rendering && render_state == new_state) {
         return;
     }
+#ifdef __APPLE__
+    if (BbStats::enabled) {
+        passes_begun.fetch_add(1, std::memory_order_relaxed);
+        if (!is_rendering && render_state == new_state) {
+            passes_resumed.fetch_add(1, std::memory_order_relaxed);
+            std::scoped_lock lk{pass_split_mutex};
+            ++pass_split_callers[last_end_caller];
+        }
+    }
+#endif
     EndRendering();
     is_rendering = true;
     render_state = new_state;
@@ -122,11 +183,17 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
     });
 }
 
+#ifdef __APPLE__
+__attribute__((noinline)) // PrintPassStats names its caller
+#endif
 void Scheduler::EndRendering() {
     if (!is_rendering) {
         return;
     }
     is_rendering = false;
+#ifdef __APPLE__
+    last_end_caller = __builtin_return_address(0);
+#endif
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
 }
 

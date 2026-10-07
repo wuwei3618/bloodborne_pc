@@ -830,6 +830,15 @@ public:
     /// CommandBuffer() calls that waited for a recording thread (BB_FRAME_STATS).
     static inline std::atomic<u64> direct_recordings{0};
 
+#ifdef __APPLE__
+    /// bbport (macOS, BB_FRAME_STATS=1): render passes begun, and those that resume the
+    /// attachments of the pass just ended. KosmicKrisp stores the attachments at each pass end
+    /// and waits there for all earlier GPU work, so each resumed pass is a split that costs.
+    static inline std::atomic<u64> passes_begun{0}, passes_resumed{0};
+    /// Prints both per frame, with the code that ended the resumed passes most often.
+    static void PrintPassStats(u64 frames);
+#endif
+
     /// Returns the current command buffer tick.
     [[nodiscard]] u64 CurrentTick() const noexcept {
         return work_semaphore.CurrentTick();
@@ -902,6 +911,9 @@ private:
     std::jthread priority_pending_ops_thread;
     RenderState render_state;
     bool is_rendering = false;
+#ifdef __APPLE__
+    void* last_end_caller = nullptr; ///< who called EndRendering() last (PrintPassStats)
+#endif
     // bbport: threaded recording
     std::unique_ptr<RecordChunk> record_chunk;
     std::vector<std::unique_ptr<RecordChunk>> full_chunks;

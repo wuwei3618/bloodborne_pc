@@ -466,6 +466,7 @@ void VideoOutDriver::Flip(const Request& req) {
                         "rect/quad lists %.1f, patches %.1f, fans %.1f)\n",
                         list_restart + strips + rect_quad + patches + fans, list_restart, strips,
                         rect_quad, patches, fans);
+            Vulkan::Scheduler::PrintPassStats(frames);
 #endif
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
