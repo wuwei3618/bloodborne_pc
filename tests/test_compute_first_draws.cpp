@@ -28,14 +28,14 @@ int main() {
         assert(ClassifyComputeFirstDraw(type, false, false, true) == Kind::None);
     }
 
-    // Rect and quad lists are drawn with tessellation, as patches are, indexed or not.
-    for (const auto type : {PrimitiveType::RectList, PrimitiveType::QuadList,
-                            PrimitiveType::PatchPrimitive}) {
-        for (const bool indexed : {false, true}) {
-            for (const bool restart : {false, true}) {
-                assert(ClassifyComputeFirstDraw(type, indexed, restart, true) ==
-                       Kind::Tessellation);
+    // Tessellation, indexed or not: bbport's rect and quad lists, and the game's own patches.
+    for (const bool indexed : {false, true}) {
+        for (const bool restart : {false, true}) {
+            for (const auto type : {PrimitiveType::RectList, PrimitiveType::QuadList}) {
+                assert(ClassifyComputeFirstDraw(type, indexed, restart, true) == Kind::RectQuad);
             }
+            assert(ClassifyComputeFirstDraw(PrimitiveType::PatchPrimitive, indexed, restart,
+                                            true) == Kind::Patch);
         }
     }
 

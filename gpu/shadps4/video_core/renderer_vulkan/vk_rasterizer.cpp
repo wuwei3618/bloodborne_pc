@@ -3414,14 +3414,23 @@ void Rasterizer::UpdatePrimitiveState(const bool is_indexed) const {
     ASSERT_MSG(!is_indexed || !prim_restart || regs.primitive_restart_index == 0xFFFF ||
                    regs.primitive_restart_index == 0xFFFFFFFF,
                "Primitive restart index other than -1 is not supported yet");
+    // bbport: BB_STRIP_RESTART=1 turns restart on for indexed 16-bit strips that have it off.
+    // Metal restarts strips at index 0xFFFF in any case, so KosmicKrisp otherwise rewrites their
+    // indices to 32 bits in a compute pass, which ends the render pass. Only a strip that uses
+    // vertex 65535 draws differently.
+    static const bool strip_restart = [] {
+        const char* env = std::getenv("BB_STRIP_RESTART");
+        return env && env[0] == '1';
+    }();
+    const bool index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
+    auto kind = ClassifyComputeFirstDraw(regs.primitive_type, is_indexed, prim_restart, index16);
+    const bool strip_restart_on = strip_restart && kind == ComputeFirstDraw::Strip16;
+    if (strip_restart_on) {
+        kind = ComputeFirstDraw::None;
+    }
 #ifdef __APPLE__
-    if (BbStats::enabled) {
-        const bool index16 = regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16;
-        const auto kind =
-            ClassifyComputeFirstDraw(regs.primitive_type, is_indexed, prim_restart, index16);
-        if (kind != ComputeFirstDraw::None) {
-            compute_first_draws[static_cast<size_t>(kind)].fetch_add(1, std::memory_order_relaxed);
-        }
+    if (BbStats::enabled && kind != ComputeFirstDraw::None) {
+        compute_first_draws[static_cast<size_t>(kind)].fetch_add(1, std::memory_order_relaxed);
     }
 #endif
 
@@ -3430,7 +3439,7 @@ void Rasterizer::UpdatePrimitiveState(const bool is_indexed) const {
                                : vk::CullModeFlagBits::eNone;
     const auto front_face = LiverpoolToVK::FrontFace(regs.polygon_control.front_face);
 
-    dynamic_state.SetPrimitiveRestartEnabled(prim_restart);
+    dynamic_state.SetPrimitiveRestartEnabled(prim_restart || strip_restart_on);
     dynamic_state.SetRasterizerDiscardEnabled(regs.clipper_control.dx_rasterization_kill);
     dynamic_state.SetCullMode(cull_mode);
     dynamic_state.SetFrontFace(front_face);

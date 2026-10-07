@@ -459,12 +459,13 @@ void VideoOutDriver::Flip(const Request& req) {
             };
             const double list_restart = per_frame(Vulkan::ComputeFirstDraw::ListRestart);
             const double strips = per_frame(Vulkan::ComputeFirstDraw::Strip16);
-            const double tessellation = per_frame(Vulkan::ComputeFirstDraw::Tessellation);
+            const double rect_quad = per_frame(Vulkan::ComputeFirstDraw::RectQuad);
+            const double patches = per_frame(Vulkan::ComputeFirstDraw::Patch);
             const double fans = per_frame(Vulkan::ComputeFirstDraw::Fan);
             std::printf("Compute-first draws: %.1f/frame (list restart %.1f, 16-bit strips %.1f, "
-                        "tessellation %.1f, fans %.1f)\n",
-                        list_restart + strips + tessellation + fans, list_restart, strips,
-                        tessellation, fans);
+                        "rect/quad lists %.1f, patches %.1f, fans %.1f)\n",
+                        list_restart + strips + rect_quad + patches + fans, list_restart, strips,
+                        rect_quad, patches, fans);
 #endif
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {

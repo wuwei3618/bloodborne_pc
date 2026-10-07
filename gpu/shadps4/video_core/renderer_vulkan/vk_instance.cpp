@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <cstdio>
-#include <cstdlib>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -301,16 +299,7 @@ bool Instance::CreateDevice() {
     depth_clip_control = add_extension(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
     depth_clip_enable = add_extension(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
     vertex_input_dynamic_state = add_extension(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
-    // bbport: BB_LIST_RESTART=0 leaves primitive restart off for list topologies. KosmicKrisp
-    // runs each indexed list draw with restart on through a compute pass, which ends the render
-    // pass (vk_compute_first_draw.h).
-    const char* list_restart_env = std::getenv("BB_LIST_RESTART");
-    if (list_restart_env && list_restart_env[0] == '0') {
-        std::printf("GPU: primitive restart off for list topologies (BB_LIST_RESTART=0)\n");
-        list_restart = false;
-    } else {
-        list_restart = add_extension(VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
-    }
+    list_restart = add_extension(VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME);
     if (list_restart) {
         list_restart_features =
             feature_chain.get<vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT>();
