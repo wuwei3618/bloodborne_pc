@@ -14,32 +14,49 @@ void GpuProfiler::Init(const Instance& instance, Scheduler& scheduler) {
     if (!env || env[0] != '1' || instance_ptr) {
         return;
     }
-    instance_ptr = new GpuProfiler(instance, scheduler);
+    auto* profiler = new GpuProfiler(instance, scheduler);
+    if (!profiler->pool) {
+        std::printf("GPU profile: off (no timestamp pool of %u queries)\n",
+                    NumSlices * MinSliceQueries);
+        delete profiler;
+        return;
+    }
+    instance_ptr = profiler;
 }
 
 GpuProfiler::GpuProfiler(const Instance& instance, Scheduler& scheduler_)
     : device{instance.GetDevice()}, scheduler{scheduler_} {
-    const vk::QueryPoolCreateInfo info = {
-        .queryType = vk::QueryType::eTimestamp,
-        .queryCount = NumSlices * SliceQueries,
-    };
-    pool = Check<"create timestamp query pool">(device.createQueryPoolUnique(info));
-    device.resetQueryPool(*pool, 0, NumSlices * SliceQueries);
+    for (; slice_queries >= MinSliceQueries; slice_queries /= 2) {
+        const vk::QueryPoolCreateInfo info = {
+            .queryType = vk::QueryType::eTimestamp,
+            .queryCount = NumSlices * slice_queries,
+        };
+        auto [result, created] = device.createQueryPoolUnique(info);
+        if (result == vk::Result::eSuccess) {
+            pool = std::move(created);
+            break;
+        }
+    }
+    if (!pool) {
+        return;
+    }
+    device.resetQueryPool(*pool, 0, NumSlices * slice_queries);
     period_ns = instance.GetPhysicalDevice().getProperties().limits.timestampPeriod;
     for (auto& k : keys) {
-        k.reserve(SliceQueries);
+        k.reserve(slice_queries);
     }
-    std::printf("GPU profile: on (timestamp period %.2f ns)\n", period_ns);
+    std::printf("GPU profile: on (timestamp period %.2f ns, %u timestamps per frame)\n", period_ns,
+                slice_queries);
 }
 
 void GpuProfiler::WriteTimestamp(u64 key) {
-    if (used[slice] + 1 >= SliceQueries) {
+    if (used[slice] + 1 >= slice_queries) {
         return; // the frame's slice is full: the rest of the frame goes to the last label
     }
     // Outside render passes: radv_CmdWriteTimestamp2 crashed inside some. Marks sit where a
     // pass, dispatch or submission ends anyway.
     scheduler.EndRendering();
-    const u32 query = slice * SliceQueries + used[slice]++;
+    const u32 query = slice * slice_queries + used[slice]++;
     keys[slice].push_back(key);
     current = key;
     scheduler.Record([pool = *pool, query](vk::CommandBuffer cmdbuf) {
@@ -49,9 +66,9 @@ void GpuProfiler::WriteTimestamp(u64 key) {
 
 void GpuProfiler::BeginFrame() {
     // Close the frame: one more timestamp without a label.
-    if (used[slice] > 0 && used[slice] < SliceQueries) {
+    if (used[slice] > 0 && used[slice] < slice_queries) {
         scheduler.EndRendering();
-        const u32 query = slice * SliceQueries + used[slice]++;
+        const u32 query = slice * slice_queries + used[slice]++;
         scheduler.Record([pool = *pool, query](vk::CommandBuffer cmdbuf) {
             cmdbuf.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, pool, query);
         });
@@ -63,7 +80,7 @@ void GpuProfiler::BeginFrame() {
         Collect(slice);
     }
     if (used[slice]) {
-        device.resetQueryPool(*pool, slice * SliceQueries, used[slice]);
+        device.resetQueryPool(*pool, slice * slice_queries, used[slice]);
     }
     used[slice] = 0;
     keys[slice].clear();
@@ -76,7 +93,7 @@ void GpuProfiler::Collect(u32 which) {
     std::vector<u64> stamps(count);
     // Four frames on this is complete unless the GPU lags that far: then wait for it.
     const auto result = device.getQueryPoolResults(
-        *pool, which * SliceQueries, count, count * sizeof(u64), stamps.data(), sizeof(u64),
+        *pool, which * slice_queries, count, count * sizeof(u64), stamps.data(), sizeof(u64),
         vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
     if (result != vk::Result::eSuccess) {
         return;

@@ -62,12 +62,16 @@ private:
     void Print();
 
     static constexpr u32 NumSlices = 4;
-    static constexpr u32 SliceQueries = 4096;
+    /// Timestamps per frame. bbport: Metal (KosmicKrisp) caps a timestamp pool at 4096, so the
+    /// pool is halved down to MinSliceQueries per frame until the driver accepts it.
+    static constexpr u32 MaxSliceQueries = 4096;
+    static constexpr u32 MinSliceQueries = 256;
     static inline GpuProfiler* instance_ptr = nullptr;
 
     vk::Device device;
     Scheduler& scheduler;
     vk::UniqueQueryPool pool;
+    u32 slice_queries = MaxSliceQueries;
     double period_ns = 1.0;
     u32 slice = 0;
     std::array<std::vector<u64>, NumSlices> keys; ///< label of each timestamp but the last
