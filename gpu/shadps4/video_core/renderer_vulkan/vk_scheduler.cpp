@@ -64,6 +64,9 @@ namespace {
 std::mutex pass_split_mutex;
 /// EndRendering() caller of resumed passes, and its caller.
 std::map<std::pair<void*, void*>, u64> pass_split_callers;
+std::mutex gpu_wait_mutex;
+/// Wait() callers that waited for the GPU, and their caller: waits and nanoseconds.
+std::map<std::pair<void*, void*>, std::pair<u64, u64>> gpu_wait_callers;
 
 /// "function+0xoffset" for a code address in a loaded image.
 std::string CodeName(void* address) {
@@ -108,6 +111,36 @@ void Scheduler::PrintPassStats(u64 frames) {
     std::printf("Render passes: %.1f/frame, %.1f resume the attachments of the pass just "
                 "ended%s\n",
                 double(begun) / frames, double(resumed) / frames, callers.c_str());
+}
+
+void Scheduler::PrintGpuWaitStats(u64 frames) {
+    std::vector<std::pair<std::pair<u64, u64>, std::pair<void*, void*>>> top;
+    {
+        std::scoped_lock lk{gpu_wait_mutex};
+        for (const auto& [callers, wait] : gpu_wait_callers) {
+            top.emplace_back(std::pair{wait.second, wait.first}, callers);
+        }
+        gpu_wait_callers.clear();
+    }
+    if (!frames) {
+        return;
+    }
+    std::ranges::sort(top, std::greater{});
+    u64 waits = 0;
+    u64 total_ns = 0;
+    for (const auto& [wait, callers] : top) {
+        total_ns += wait.first;
+        waits += wait.second;
+    }
+    std::string sites;
+    for (size_t i = 0; i < std::min<size_t>(top.size(), 6); ++i) {
+        char entry[64];
+        std::snprintf(entry, sizeof(entry), "; %.1f/frame %.1f ms/frame ",
+                      double(top[i].first.second) / frames, top[i].first.first / 1e6 / frames);
+        sites += entry + CodeName(top[i].second.first) + " <- " + CodeName(top[i].second.second);
+    }
+    std::printf("GPU waits: %.1f/frame, %.1f ms/frame%s\n", double(waits) / frames,
+                total_ns / 1e6 / frames, sites.c_str());
 }
 #endif
 
@@ -409,14 +442,35 @@ void Scheduler::Finish() {
     Wait(presubmit_tick);
 }
 
+#ifdef __APPLE__
+__attribute__((noinline)) // PrintGpuWaitStats names its caller
+#endif
 void Scheduler::Wait(u64 tick) {
     if (tick >= work_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
         Flush(info);
     }
+#ifdef __APPLE__
+    const bool note = BbStats::enabled && !work_semaphore.IsFree(tick);
+    const auto start = note ? std::chrono::steady_clock::now()
+                            : std::chrono::steady_clock::time_point{};
+#endif
     BbStats::WaitTimer timer{BbStats::tick_wait_ns};
     work_semaphore.Wait(tick);
+#ifdef __APPLE__
+    if (note) {
+        const u64 ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count();
+        const std::pair<void*, void*> callers{__builtin_return_address(0),
+                                              __builtin_return_address(1)};
+        std::scoped_lock lk{gpu_wait_mutex};
+        auto& [count, total_ns] = gpu_wait_callers[callers];
+        ++count;
+        total_ns += ns;
+    }
+#endif
 }
 
 void Scheduler::PopPendingOperations() {

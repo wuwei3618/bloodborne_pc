@@ -837,6 +837,9 @@ public:
     static inline std::atomic<u64> passes_begun{0}, passes_resumed{0};
     /// Prints both per frame, with the code that ended the resumed passes most often.
     static void PrintPassStats(u64 frames);
+    /// Prints the waits for the GPU per frame (Wait() calls that had to wait), with the time
+    /// and the code that waited most.
+    static void PrintGpuWaitStats(u64 frames);
 #endif
 
     /// Returns the current command buffer tick.
